@@ -1,0 +1,1678 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>報酬計算マニュアル｜社内用 Ver. 2.0</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho+B1:wght@400;500;600;700;800&family=Zen+Kaku+Gothic+New:wght@300;400;500;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#f6f1e7;
+    --paper-deep:#ede4d2;
+    --ink:#1a1612;
+    --ink-soft:#3d362d;
+    --ink-faint:#7a6f60;
+    --rule:#d4c8af;
+    --shu:#a8201a;
+    --shu-deep:#7a1612;
+    --gold:#9a7b3f;
+    --moss:#4a5a3a;
+    --indigo:#1f3046;
+    --sky:#3d5a78;
+    --plum:#6b3c4a;
+    --shadow: 0 1px 0 rgba(26,22,18,.04), 0 2px 12px rgba(26,22,18,.06);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    font-family:"Zen Kaku Gothic New", "Hiragino Kaku Gothic ProN", sans-serif;
+    background:var(--paper);
+    color:var(--ink);
+    line-height:1.85;
+    font-size:15px;
+    font-feature-settings:"palt" 1;
+    background-image:
+      radial-gradient(circle at 20% 0%, rgba(168,32,26,.03), transparent 50%),
+      radial-gradient(circle at 80% 100%, rgba(154,123,63,.04), transparent 50%);
+    background-attachment: fixed;
+  }
+  .top-bar{
+    background:var(--ink); color:var(--paper);
+    padding:10px 0; font-size:11px;
+    letter-spacing:.4em; text-align:center;
+  }
+  .top-bar span{color:var(--shu);margin:0 12px}
+
+  .container{max-width:880px;margin:0 auto;padding:80px 56px 120px}
+
+  /* 表紙 */
+  .cover{
+    text-align:center; padding:60px 0 80px;
+    border-bottom:1px solid var(--rule); margin-bottom:64px;
+    position:relative;
+  }
+  .cover::before{
+    content:"報"; position:absolute; top:0; left:50%;
+    transform:translateX(-50%);
+    width:60px; height:60px; background:var(--shu);
+    color:var(--paper); border-radius:6px;
+    display:flex; align-items:center; justify-content:center;
+    font-family:"Shippori Mincho B1", serif;
+    font-size:28px; font-weight:700; line-height:60px;
+    box-shadow:0 4px 16px rgba(168,32,26,.25);
+  }
+  .cover-eyebrow{
+    font-family:"JetBrains Mono", monospace;
+    font-size:11px; letter-spacing:.4em;
+    color:var(--ink-faint); margin-top:90px; margin-bottom:24px;
+  }
+  .cover h1{
+    font-family:"Shippori Mincho B1", serif;
+    font-size:54px; font-weight:600; letter-spacing:.08em;
+    line-height:1.3; margin-bottom:16px;
+  }
+  .cover h1 .accent{color:var(--shu)}
+  .cover-sub{
+    font-family:"Shippori Mincho B1", serif;
+    font-size:17px; color:var(--ink-soft);
+    letter-spacing:.2em; margin-bottom:48px;
+  }
+  .cover-meta{
+    display:inline-flex; gap:32px;
+    padding:14px 32px; border:1px solid var(--rule);
+    border-radius:2px; background:var(--paper-deep);
+    font-size:12px; font-family:"JetBrains Mono", monospace;
+    color:var(--ink-soft);
+  }
+  .cover-meta b{color:var(--ink);font-weight:600;margin-right:6px}
+
+  /* 目次 */
+  .toc{
+    background:var(--paper-deep);
+    border:1px solid var(--rule);
+    padding:36px 40px; margin-bottom:64px;
+    border-radius:2px;
+  }
+  .toc-label{
+    font-family:"JetBrains Mono", monospace;
+    font-size:10px; letter-spacing:.4em;
+    color:var(--shu); margin-bottom:8px;
+  }
+  .toc h2{
+    font-family:"Shippori Mincho B1", serif;
+    font-size:24px; font-weight:600;
+    margin-bottom:24px; padding-bottom:16px;
+    border-bottom:1px solid var(--rule);
+  }
+  .toc ol{list-style:none}
+  .toc > ol > li{
+    padding:8px 0; font-size:14px;
+    border-bottom:1px dotted var(--rule);
+  }
+  .toc > ol > li:last-child{border-bottom:none}
+  .toc > ol > li > a{
+    display:flex; align-items:baseline; gap:14px;
+    color:var(--ink); text-decoration:none;
+    transition:color .15s;
+  }
+  .toc > ol > li > a:hover{color:var(--shu)}
+  .toc-no{
+    font-family:"Shippori Mincho B1", serif;
+    color:var(--shu); font-size:13px;
+    font-weight:600; min-width:64px;
+  }
+  .toc-sub{margin:6px 0 4px 78px}
+  .toc-sub li{font-size:13px;padding:3px 0;color:var(--ink-soft)}
+  .toc-sub li::before{content:"・";color:var(--shu);margin-right:4px}
+  .toc-sub li a{color:inherit;text-decoration:none}
+  .toc-sub li a:hover{color:var(--shu)}
+
+  section.chapter{
+    padding-top:48px; margin-bottom:72px;
+    scroll-margin-top:24px;
+  }
+  .chapter-header{
+    display:flex; align-items:baseline; gap:24px;
+    margin-bottom:32px; padding-bottom:18px;
+    border-bottom:2px solid var(--ink); position:relative;
+  }
+  .chapter-header::after{
+    content:""; position:absolute;
+    bottom:-2px; left:0; width:80px; height:2px;
+    background:var(--shu);
+  }
+  .chapter-no{
+    font-family:"Shippori Mincho B1", serif;
+    font-size:13px; font-weight:600; color:var(--shu);
+    letter-spacing:.2em; white-space:nowrap;
+  }
+  .chapter-title{
+    font-family:"Shippori Mincho B1", serif;
+    font-size:32px; font-weight:600;
+    letter-spacing:.04em; line-height:1.3;
+  }
+  .chapter-en{
+    margin-left:auto;
+    font-family:"JetBrains Mono", monospace;
+    font-size:11px; letter-spacing:.3em; color:var(--ink-faint);
+  }
+
+  .dept{
+    margin:60px 0 48px; padding:36px 40px;
+    background:#fff; border:1px solid var(--rule);
+    border-top:4px solid var(--shu);
+    box-shadow:var(--shadow); border-radius:2px;
+    position:relative; scroll-margin-top:24px;
+  }
+  .dept[data-color="cs"]{border-top-color:var(--sky)}
+  .dept[data-color="sales"]{border-top-color:var(--shu)}
+  .dept[data-color="video"]{border-top-color:var(--moss)}
+  .dept[data-color="ad"]{border-top-color:var(--gold)}
+  .dept[data-color="eg"]{border-top-color:var(--indigo)}
+  .dept[data-color="jv"]{border-top-color:var(--plum)}
+
+  .dept-header{
+    display:flex; align-items:baseline; gap:18px;
+    margin-bottom:24px; padding-bottom:14px;
+    border-bottom:1px dashed var(--rule);
+  }
+  .dept-tag{
+    display:inline-block; background:var(--shu);
+    color:var(--paper); padding:4px 12px;
+    font-family:"JetBrains Mono", monospace;
+    font-size:11px; font-weight:600; letter-spacing:.15em;
+    border-radius:2px;
+  }
+  .dept[data-color="cs"] .dept-tag{background:var(--sky)}
+  .dept[data-color="sales"] .dept-tag{background:var(--shu)}
+  .dept[data-color="video"] .dept-tag{background:var(--moss)}
+  .dept[data-color="ad"] .dept-tag{background:var(--gold)}
+  .dept[data-color="eg"] .dept-tag{background:var(--indigo)}
+  .dept[data-color="jv"] .dept-tag{background:var(--plum)}
+
+  .dept-title{
+    font-family:"Shippori Mincho B1", serif;
+    font-size:24px; font-weight:600; letter-spacing:.04em;
+  }
+  .dept-en{
+    margin-left:auto;
+    font-family:"JetBrains Mono", monospace;
+    font-size:11px; letter-spacing:.25em; color:var(--ink-faint);
+  }
+
+  h3.section-title{
+    font-family:"Shippori Mincho B1", serif;
+    font-size:20px; font-weight:600;
+    margin:36px 0 16px; padding-left:14px;
+    border-left:4px solid var(--shu); line-height:1.5;
+  }
+  .dept[data-color="cs"] h3.section-title{border-left-color:var(--sky)}
+  .dept[data-color="sales"] h3.section-title{border-left-color:var(--shu)}
+  .dept[data-color="video"] h3.section-title{border-left-color:var(--moss)}
+  .dept[data-color="ad"] h3.section-title{border-left-color:var(--gold)}
+  .dept[data-color="eg"] h3.section-title{border-left-color:var(--indigo)}
+  .dept[data-color="jv"] h3.section-title{border-left-color:var(--plum)}
+
+  h4.subsec{
+    font-family:"Shippori Mincho B1", serif;
+    font-size:16px; font-weight:600;
+    margin:24px 0 12px; color:var(--ink);
+  }
+  h4.subsec::before{
+    content:"◇"; color:var(--shu);
+    margin-right:8px; font-size:13px;
+  }
+  .dept[data-color="cs"] h4.subsec::before{color:var(--sky)}
+  .dept[data-color="video"] h4.subsec::before{color:var(--moss)}
+  .dept[data-color="ad"] h4.subsec::before{color:var(--gold)}
+  .dept[data-color="eg"] h4.subsec::before{color:var(--indigo)}
+  .dept[data-color="jv"] h4.subsec::before{color:var(--plum)}
+
+  p{margin-bottom:14px}
+  p.lead{font-size:15px;color:var(--ink-soft);margin-bottom:18px}
+
+  ul.bullet, ol.numbered{margin:12px 0 18px 24px}
+  ul.bullet li, ol.numbered li{margin-bottom:6px}
+  ul.bullet li::marker{color:var(--shu)}
+  ol.numbered li::marker{color:var(--shu);font-weight:600;font-family:"JetBrains Mono", monospace}
+
+  .callout{
+    background:var(--paper-deep);
+    border-left:4px solid var(--gold);
+    padding:18px 24px; margin:20px 0;
+    border-radius:0 2px 2px 0; font-size:14px;
+  }
+  .callout.shu{border-left-color:var(--shu);background:rgba(168,32,26,.04)}
+  .callout.indigo{border-left-color:var(--indigo);background:rgba(31,48,70,.04)}
+  .callout.alert{
+    border:2px solid var(--shu); background:#fff;
+    border-left-width:6px;
+    box-shadow:var(--shadow);
+  }
+  .callout-label{
+    font-family:"Shippori Mincho B1", serif;
+    font-weight:600; font-size:13px;
+    color:var(--shu); margin-bottom:6px; letter-spacing:.1em;
+  }
+  .callout.indigo .callout-label{color:var(--indigo)}
+  .callout.gold .callout-label{color:var(--gold)}
+  .callout.alert .callout-label{
+    color:var(--shu); font-size:14px;
+  }
+
+  table{
+    width:100%; border-collapse:collapse;
+    margin:14px 0 20px; font-size:13.5px;
+    background:#fff; box-shadow:var(--shadow);
+  }
+  th, td{
+    padding:10px 14px; border:1px solid var(--rule);
+    text-align:left; vertical-align:top;
+  }
+  th{
+    background:var(--ink); color:var(--paper);
+    font-weight:500; letter-spacing:.05em; font-size:12.5px;
+  }
+  tr:nth-child(even) td{background:var(--paper-deep)}
+  td.code, td.num{
+    font-family:"JetBrains Mono", monospace;
+    font-size:12.5px; color:var(--ink-soft);
+  }
+  td.num{text-align:right}
+  td.shu{color:var(--shu);font-weight:600}
+
+  .formula{
+    display:flex; align-items:center; justify-content:center;
+    gap:12px; flex-wrap:wrap;
+    background:#fff; border:1px solid var(--rule);
+    padding:20px 22px; margin:14px 0;
+    font-family:"Shippori Mincho B1", serif;
+    font-size:16px; border-radius:2px; box-shadow:var(--shadow);
+  }
+  .formula .fbox{
+    padding:7px 14px; background:var(--paper-deep);
+    border-radius:2px; white-space:nowrap;
+  }
+  .formula .fbox.result{background:var(--shu);color:var(--paper)}
+  .formula .fbox.alt{background:var(--ink);color:var(--paper)}
+  .formula .op{color:var(--shu);font-weight:600;font-size:20px}
+  .formula .eq{color:var(--ink-faint);font-weight:600;font-size:20px}
+
+  .diagram-wrap{
+    background:#fff; border:1px solid var(--rule);
+    padding:28px 22px 22px; margin:20px 0 28px;
+    border-radius:2px; box-shadow:var(--shadow);
+  }
+  .diagram-title{
+    font-family:"Shippori Mincho B1", serif;
+    font-size:14px; font-weight:600; color:var(--shu);
+    text-align:center; margin-bottom:6px; letter-spacing:.1em;
+  }
+  .diagram-caption{
+    font-size:12px; color:var(--ink-faint);
+    text-align:center; margin-bottom:16px;
+  }
+  .diagram-svg{width:100%;height:auto;display:block}
+
+  .example{
+    background:#fff; border:1px solid var(--rule);
+    border-top:3px solid var(--moss);
+    padding:22px 26px; margin:20px 0;
+    border-radius:2px; box-shadow:var(--shadow);
+  }
+  .example-label{
+    display:inline-block; background:var(--moss);
+    color:var(--paper); font-size:11px; font-weight:600;
+    padding:3px 10px; letter-spacing:.2em;
+    border-radius:2px; margin-bottom:10px;
+  }
+  .example-title{
+    font-family:"Shippori Mincho B1", serif;
+    font-size:16px; font-weight:600; margin-bottom:12px;
+  }
+  .calc-row{
+    display:flex; justify-content:space-between;
+    align-items:baseline; padding:7px 0;
+    border-bottom:1px dotted var(--rule);
+    font-size:14px; gap:14px;
+  }
+  .calc-row.subtotal{border-bottom:1px solid var(--ink);font-weight:600;background:var(--paper-deep);padding:9px 12px;margin:4px -12px}
+  .calc-row.total{
+    background:var(--ink);color:var(--paper);
+    padding:11px 16px;margin:6px -16px 0;
+    font-weight:600;font-size:15px; border:none;
+  }
+  .calc-row .label{color:var(--ink-soft);flex:1}
+  .calc-row .val{font-family:"JetBrains Mono", monospace;font-weight:600;text-align:right;white-space:nowrap}
+  .calc-row .val.minus{color:var(--shu)}
+  .calc-row.total .label, .calc-row.total .val{color:var(--paper)}
+
+  .calc-note{
+    font-size:12px; color:var(--ink-faint);
+    margin-top:8px; padding-left:8px;
+    border-left:2px solid var(--rule);
+  }
+
+  .back-top{
+    display:inline-block; margin-top:8px;
+    font-size:11px; color:var(--ink-faint);
+    text-decoration:none; font-family:"JetBrains Mono", monospace;
+    letter-spacing:.2em;
+  }
+  .back-top:hover{color:var(--shu)}
+
+  /* エスカレーションフロー専用スタイル */
+  .escalation{
+    background:#fff;
+    border:2px solid var(--shu);
+    padding:28px 32px;
+    margin:24px 0;
+    border-radius:2px;
+    box-shadow:var(--shadow);
+    position:relative;
+  }
+  .escalation-stamp{
+    position:absolute;
+    top:-14px; right:24px;
+    background:var(--shu);
+    color:var(--paper);
+    padding:5px 14px;
+    font-family:"Shippori Mincho B1", serif;
+    font-size:12px;
+    font-weight:600;
+    letter-spacing:.2em;
+    border-radius:2px;
+  }
+  .escalation h4{
+    font-family:"Shippori Mincho B1", serif;
+    font-size:18px;
+    margin-bottom:18px;
+    color:var(--shu);
+  }
+  .esc-step{
+    display:flex; align-items:flex-start; gap:18px;
+    padding:14px 0;
+    border-bottom:1px dashed var(--rule);
+  }
+  .esc-step:last-child{border-bottom:none}
+  .esc-num{
+    flex-shrink:0;
+    width:36px; height:36px;
+    background:var(--shu); color:var(--paper);
+    border-radius:50%;
+    display:flex; align-items:center; justify-content:center;
+    font-family:"Shippori Mincho B1", serif;
+    font-size:18px; font-weight:600;
+  }
+  .esc-text{flex:1;font-size:14px;line-height:1.7}
+  .esc-text b{color:var(--shu)}
+
+  /* 付録 */
+  .appendix{
+    background:rgba(168,32,26,.03);
+    border:1px solid var(--shu); border-style:dashed;
+    padding:32px 36px; margin-top:48px;
+    border-radius:2px;
+  }
+  .appendix h3{
+    font-family:"Shippori Mincho B1", serif;
+    font-size:18px; color:var(--shu);
+    margin-bottom:14px; border:none; padding:0;
+  }
+  .appendix ol{margin-left:22px}
+  .appendix li{margin-bottom:10px;font-size:14px}
+  .appendix li b{color:var(--shu)}
+
+  .signature{
+    margin-top:64px; padding-top:36px;
+    border-top:1px solid var(--rule);
+    display:grid; grid-template-columns:1fr 1fr 1fr; gap:24px;
+  }
+  .sig-box{
+    text-align:center; padding:22px 14px;
+    border:1px solid var(--rule); background:#fff;
+  }
+  .sig-box .role{
+    font-size:11px; letter-spacing:.3em;
+    color:var(--ink-faint); margin-bottom:28px;
+  }
+  .sig-box .line{border-bottom:1px solid var(--ink);margin:0 12px 8px;height:1px}
+  .sig-box .name-label{font-size:11px;color:var(--ink-faint);font-family:"Shippori Mincho B1", serif}
+
+  footer{
+    margin-top:64px; padding:32px 0;
+    border-top:1px solid var(--rule);
+    text-align:center; font-size:11px;
+    color:var(--ink-faint); letter-spacing:.2em;
+    font-family:"JetBrains Mono", monospace;
+  }
+  footer .ornament{color:var(--shu);font-size:14px;margin:0 8px}
+
+  .svg-flow text{font-family:"Zen Kaku Gothic New", sans-serif}
+  .svg-flow .label-jp{font-family:"Shippori Mincho B1", serif}
+
+  /* 改訂履歴 */
+  .revisions{
+    background:var(--paper-deep);
+    border:1px solid var(--rule);
+    padding:18px 24px;
+    margin:32px 0 0;
+    font-size:13px;
+  }
+  .revisions h4{
+    font-family:"Shippori Mincho B1", serif;
+    font-size:14px; color:var(--shu);
+    margin-bottom:8px; letter-spacing:.1em;
+  }
+  .revisions ul{list-style:none;padding-left:0}
+  .revisions li{padding:3px 0;color:var(--ink-soft)}
+  .revisions li::before{content:"›";color:var(--shu);margin-right:8px;font-weight:bold}
+
+  @media print{
+    body{background:#fff}
+    .top-bar{display:none}
+    section.chapter{page-break-before:always}
+    .cover{page-break-after:always}
+    .dept{page-break-inside:avoid}
+  }
+  @media (max-width: 720px){
+    .container{padding:48px 20px 80px}
+    .cover h1{font-size:36px}
+    .chapter-title{font-size:24px}
+    .chapter-header{flex-wrap:wrap;gap:8px}
+    .chapter-en{margin-left:0;width:100%;margin-top:4px}
+    .dept{padding:24px 20px}
+    .dept-header{flex-wrap:wrap;gap:8px}
+    .dept-en{margin-left:0;width:100%}
+    .formula{font-size:13px;gap:8px;padding:14px}
+    .formula .op,.formula .eq{font-size:16px}
+    .signature{grid-template-columns:1fr}
+  }
+</style>
+</head>
+<body>
+
+<div class="top-bar">
+  <span>◆</span>社内用<span>◆</span>報酬計算マニュアル<span>◆</span>取扱注意<span>◆</span>
+</div>
+
+<div class="container">
+
+  <!-- ───────── 表紙 ───────── -->
+  <div class="cover">
+    <div class="cover-eyebrow">Internal Compensation Manual / Revision 2.0</div>
+    <h1>報酬計算<span class="accent">マニュアル</span></h1>
+    <div class="cover-sub">― 部署別報酬規程 ／ 案件分類別純利益分配 ／ 確定支払フロー ―</div>
+    <div class="cover-meta">
+      <div><b>制定</b>2026.05</div>
+      <div><b>版数</b>Ver. 2.0</div>
+      <div><b>区分</b>社内限</div>
+    </div>
+  </div>
+
+  <!-- ───────── 目次 ───────── -->
+  <div class="toc">
+    <div class="toc-label">CONTENTS</div>
+    <h2>目次</h2>
+    <ol>
+      <li><a href="#ch1"><span class="toc-no">第 一 章</span><span>総則</span></a></li>
+      <li><a href="#ch2"><span class="toc-no">第 二 章</span><span>経費精算手続き</span></a></li>
+      <li>
+        <a href="#ch3"><span class="toc-no">第 三 章</span><span>各部署の報酬計算規程</span></a>
+        <ul class="toc-sub">
+          <li><a href="#dept-cs">第1節 ／ CS部署</a></li>
+          <li><a href="#dept-sales">第2節 ／ 営業部署</a></li>
+          <li><a href="#dept-video">第3節 ／ 動画部署</a></li>
+          <li><a href="#dept-ad">第4節 ／ 広告部署</a></li>
+        </ul>
+      </li>
+      <li>
+        <a href="#ch4"><span class="toc-no">第 四 章</span><span>案件分類別の純利益分配</span></a>
+        <ul class="toc-sub">
+          <li><a href="#case-eg">第1節 ／ エバーグリーン案件</a></li>
+          <li><a href="#case-jv">第2節 ／ JV企画（外部参画あり）</a></li>
+        </ul>
+      </li>
+      <li><a href="#ch5"><span class="toc-no">第 五 章</span><span>計算の確定と支払</span></a></li>
+      <li><a href="#appendix"><span class="toc-no">付　　録</span><span>確認事項リスト ／ 改訂履歴</span></a></li>
+    </ol>
+
+    <div class="revisions">
+      <h4>REVISION HISTORY</h4>
+      <ul>
+        <li><b>Ver. 2.0</b> ― 広告部署の正式計算式を反映／案件分類別の純利益分配（エバーグリーン・JV）を追加／支払日を月末締め翌月10日（一部15日）に変更／支払遅延時の報告フローを新設</li>
+        <li><b>Ver. 1.0</b> ― 初版制定</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ═══════════ 第1章 ═══════════ -->
+  <section class="chapter" id="ch1">
+    <div class="chapter-header">
+      <div class="chapter-no">第 一 章</div>
+      <div class="chapter-title">総則</div>
+      <div class="chapter-en">General</div>
+    </div>
+
+    <h3 class="section-title">第1条（目的）</h3>
+    <p class="lead">本マニュアルは、当社の各部署における報酬計算ルール、案件分類別の純利益分配ルール、および報酬確定後の支払フローを統一し、経理処理の正確性と分配の透明性を確保することを目的とする。</p>
+
+    <h3 class="section-title">第2条（適用範囲）</h3>
+    <ol class="numbered">
+      <li>本マニュアルは、CS部署・営業部署・動画部署・広告部署の各部署、ならびにエバーグリーン案件およびJV案件の報酬計算に適用する。</li>
+      <li>JV案件・特殊案件で本マニュアルに定めのない場合は、案件責任者と経理部門の協議により都度決定する。</li>
+      <li>本マニュアルの改定は、代表取締役の承認を要する。</li>
+    </ol>
+
+    <h3 class="section-title">第3条（用語の定義）</h3>
+    <table>
+      <thead><tr><th style="width:30%">用語</th><th>定義</th></tr></thead>
+      <tbody>
+        <tr><td>エバーグリーン案件</td><td>当社が単独で運用する、外部報酬の発生しない継続案件。</td></tr>
+        <tr><td>JV企画</td><td>外部パートナーが参画する協業案件。外部報酬が発生する。</td></tr>
+        <tr><td>外部報酬</td><td>JV企画において、外部パートナーへ支払う分配金。現段階では原則として粗利の20%。</td></tr>
+        <tr><td>純利益</td><td>分配の原資となる金額。エバーグリーンは「売上−経費」、JVは「売上−経費−外部報酬」。</td></tr>
+        <tr><td>レベニューシェア</td><td>純利益を、事前に取り決めた配分率に基づいて関係者で分配する仕組み。</td></tr>
+        <tr><td>ホルダー</td><td>本マニュアルにおける報酬の受給対象者および案件関係者の総称。</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ═══════════ 第2章 ═══════════ -->
+  <section class="chapter" id="ch2">
+    <div class="chapter-header">
+      <div class="chapter-no">第 二 章</div>
+      <div class="chapter-title">経費精算手続き</div>
+      <div class="chapter-en">Expense Reimbursement</div>
+    </div>
+
+    <p class="lead">報酬計算の前提として、案件に紐づく経費の精算ルールを以下のとおり定める。経費の計上漏れ・誤りは後続の報酬計算に直接影響するため、厳正な運用を求める。</p>
+
+    <h3 class="section-title">第4条（経費精算の基本ルール）</h3>
+    <ol class="numbered">
+      <li>経費発生から<b>5営業日以内</b>に精算申請を行うこと。</li>
+      <li>1万円超の支出には<b>領収書・案件コード・利用目的</b>の明記を必須とする。</li>
+      <li>毎月<b>5日締・15日支払</b>を原則とする。</li>
+      <li>承認権限は別途定める「決裁権限規程」に従う。</li>
+    </ol>
+
+    <h3 class="section-title">第5条（経費の区分）</h3>
+    <table>
+      <thead><tr><th style="width:18%">区分</th><th style="width:30%">主な該当費目</th><th>取扱い</th></tr></thead>
+      <tbody>
+        <tr><td><b>直接費</b></td><td>媒体費・広告費・外注費・案件専用ツール費</td><td>該当案件にそのまま紐付け</td></tr>
+        <tr><td><b>共通費</b></td><td>地代家賃・共通システム費・管理部門人件費</td><td>合理的基準で按分</td></tr>
+        <tr><td><b>分配関連費</b></td><td>各部署報酬・インセンティブ・外部報酬・レベニューシェア</td><td>本マニュアルの計算結果に基づき確定</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout">
+      <div class="callout-label gold">案件コードの徹底</div>
+      経費は必ず<b>案件コードを付して計上</b>する。案件コードのない経費は共通費扱いとなり、各部署の報酬計算上、不利に働く可能性があるため、起票担当者は注意すること。
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════ -->
+  <!-- ═══════════ 第3章 ═══════════ -->
+  <!-- ═══════════════════════════════════ -->
+  <section class="chapter" id="ch3">
+    <div class="chapter-header">
+      <div class="chapter-no">第 三 章</div>
+      <div class="chapter-title">各部署の報酬計算規程</div>
+      <div class="chapter-en">Department Compensation</div>
+    </div>
+
+    <p class="lead">本章では、CS部署・営業部署・動画部署・広告部署の4部署について、案件単位での報酬計算ルールを定める。各節は独立して機能するよう構成している。</p>
+
+    <!-- ═══════ CS部署 ═══════ -->
+    <div class="dept" data-color="cs" id="dept-cs">
+      <div class="dept-header">
+        <span class="dept-tag">SECTION 1</span>
+        <div class="dept-title">CS部署</div>
+        <div class="dept-en">CUSTOMER SUCCESS</div>
+      </div>
+
+      <p class="lead">CS部署の報酬は、<b>「基本固定費（月額）」</b>と<b>「インセンティブ（成約連動）」</b>の二階建て構成とする。</p>
+
+      <h3 class="section-title">第6条 ― 基本固定費</h3>
+      <table>
+        <thead><tr><th style="width:38%">対象</th><th>月額固定費</th><th>備考</th></tr></thead>
+        <tbody>
+          <tr><td>統括 ＋ 第二統括（合計）</td><td class="num shu">¥80,000</td><td>2名で1セット扱い</td></tr>
+          <tr><td>ワーカー（1名あたり）</td><td class="num shu">¥20,000</td><td>人数に応じて加算</td></tr>
+        </tbody>
+      </table>
+
+      <div class="formula">
+        <span class="fbox">¥80,000</span>
+        <span class="op">＋</span>
+        <span class="fbox">ワーカー人数 × ¥20,000</span>
+        <span class="eq">＝</span>
+        <span class="fbox result">案件月額固定費</span>
+      </div>
+
+      <h3 class="section-title">第7条 ― インセンティブ計算</h3>
+      <p>対象業務：<b>無言フォロー掘り起こし → 成約</b></p>
+      <p>成約金額が100万円を超える場合、<b>100万円単位の整数部分</b>に1.5%を乗じた金額をチームインセンティブとする。100万円未満の端数は計算対象としない。</p>
+
+      <div class="formula">
+        <span class="fbox">⌊成約金額 ÷ 1,000,000⌋</span>
+        <span class="op">×</span>
+        <span class="fbox">1,000,000</span>
+        <span class="op">×</span>
+        <span class="fbox">1.5%</span>
+        <span class="eq">＝</span>
+        <span class="fbox result">チームインセンティブ</span>
+      </div>
+      <p style="font-size:12px;color:var(--ink-faint);text-align:center;margin-top:-6px">※ ⌊x⌋ は x の整数部分（切り捨て）を表す</p>
+
+      <h4 class="subsec">階段式テーブル</h4>
+      <table>
+        <thead><tr><th>成約金額の範囲</th><th>計算対象金額</th><th>チームインセンティブ</th></tr></thead>
+        <tbody>
+          <tr><td>0 〜 999,999円</td><td class="num">¥0</td><td class="num">¥0</td></tr>
+          <tr><td>1,000,000 〜 1,999,999円</td><td class="num">¥1,000,000</td><td class="num shu">¥15,000</td></tr>
+          <tr><td>2,000,000 〜 2,999,999円</td><td class="num">¥2,000,000</td><td class="num shu">¥30,000</td></tr>
+          <tr><td>3,000,000 〜 3,999,999円</td><td class="num">¥3,000,000</td><td class="num shu">¥45,000</td></tr>
+          <tr><td>4,000,000 〜 4,999,999円</td><td class="num">¥4,000,000</td><td class="num shu">¥60,000</td></tr>
+          <tr><td>5,000,000円以上</td><td class="num">⌊金額/100万⌋×100万</td><td class="num shu">同 × 1.5%</td></tr>
+        </tbody>
+      </table>
+
+      <h4 class="subsec">メンバーへの分配</h4>
+      <p>チームインセンティブは、当該案件の対象メンバー人数で<b>均等割</b>する。</p>
+      <div class="formula">
+        <span class="fbox">チームインセンティブ</span>
+        <span class="op">÷</span>
+        <span class="fbox">メンバー人数</span>
+        <span class="eq">＝</span>
+        <span class="fbox result">1名あたり支給額</span>
+      </div>
+
+      <div class="diagram-wrap">
+        <div class="diagram-title">図 1 ／ CS部署 報酬計算フロー</div>
+        <div class="diagram-caption">基本固定費（月額）と成約連動インセンティブ（階段式）の二階建て構造。</div>
+        <svg class="diagram-svg svg-flow" viewBox="0 0 800 400" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="arrCs" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a1612"/>
+            </marker>
+          </defs>
+          <text x="200" y="30" text-anchor="middle" class="label-jp" font-size="13" font-weight="600" fill="#3d5a78">基本固定費（月額）</text>
+          <text x="600" y="30" text-anchor="middle" class="label-jp" font-size="13" font-weight="600" fill="#a8201a">インセンティブ（成約連動）</text>
+          <line x1="400" y1="50" x2="400" y2="350" stroke="#d4c8af" stroke-width="1" stroke-dasharray="4 4"/>
+
+          <rect x="40" y="60" width="160" height="60" rx="3" fill="#fff" stroke="#3d5a78" stroke-width="1.5"/>
+          <text x="120" y="85" text-anchor="middle" class="label-jp" font-size="12" fill="#7a6f60">統括＋第二統括</text>
+          <text x="120" y="106" text-anchor="middle" font-size="14" font-weight="600" fill="#3d5a78" font-family="JetBrains Mono">¥80,000</text>
+
+          <rect x="220" y="60" width="160" height="60" rx="3" fill="#fff" stroke="#3d5a78" stroke-width="1.5"/>
+          <text x="300" y="80" text-anchor="middle" class="label-jp" font-size="12" fill="#7a6f60">ワーカー</text>
+          <text x="300" y="98" text-anchor="middle" font-size="13" font-weight="600" fill="#3d5a78" font-family="JetBrains Mono">¥20,000 × 人数</text>
+          <text x="300" y="113" text-anchor="middle" font-size="10" fill="#7a6f60">（1名あたり）</text>
+
+          <line x1="120" y1="120" x2="200" y2="160" stroke="#3d5a78" stroke-width="1.5"/>
+          <line x1="300" y1="120" x2="220" y2="160" stroke="#3d5a78" stroke-width="1.5" marker-end="url(#arrCs)"/>
+
+          <rect x="80" y="160" width="240" height="50" rx="3" fill="#3d5a78" stroke="#1f3046" stroke-width="1.5"/>
+          <text x="200" y="183" text-anchor="middle" class="label-jp" font-size="11" fill="#f6f1e7" letter-spacing="2">FIXED COST</text>
+          <text x="200" y="200" text-anchor="middle" class="label-jp" font-size="14" font-weight="600" fill="#f6f1e7">案件月額固定費</text>
+
+          <rect x="440" y="60" width="320" height="60" rx="3" fill="#fff" stroke="#a8201a" stroke-width="1.5"/>
+          <text x="600" y="83" text-anchor="middle" class="label-jp" font-size="12" fill="#7a6f60">成約金額（無言フォロー掘り起こし）</text>
+          <text x="600" y="105" text-anchor="middle" font-size="13" font-weight="600" fill="#a8201a" font-family="JetBrains Mono">⌊成約 ÷ 100万⌋ × 100万 × 1.5%</text>
+
+          <line x1="600" y1="120" x2="600" y2="158" stroke="#a8201a" stroke-width="1.5" marker-end="url(#arrCs)"/>
+
+          <rect x="480" y="160" width="240" height="50" rx="3" fill="#a8201a" stroke="#7a1612" stroke-width="1.5"/>
+          <text x="600" y="183" text-anchor="middle" class="label-jp" font-size="11" fill="#f6f1e7" letter-spacing="2">TEAM INCENTIVE</text>
+          <text x="600" y="200" text-anchor="middle" class="label-jp" font-size="14" font-weight="600" fill="#f6f1e7">チームインセンティブ</text>
+
+          <line x1="600" y1="210" x2="600" y2="248" stroke="#a8201a" stroke-width="1.5" marker-end="url(#arrCs)"/>
+
+          <rect x="480" y="250" width="240" height="60" rx="3" fill="#fff" stroke="#a8201a" stroke-width="1.5" stroke-dasharray="4 3"/>
+          <text x="600" y="275" text-anchor="middle" class="label-jp" font-size="12" fill="#a8201a" font-weight="600">÷ メンバー人数（均等割）</text>
+          <text x="600" y="295" text-anchor="middle" font-size="11" fill="#7a6f60" font-family="JetBrains Mono">1名あたり支給額</text>
+
+          <line x1="200" y1="210" x2="200" y2="335" stroke="#1a1612" stroke-width="1.5"/>
+          <line x1="600" y1="310" x2="600" y2="335" stroke="#1a1612" stroke-width="1.5"/>
+          <line x1="200" y1="335" x2="600" y2="335" stroke="#1a1612" stroke-width="1.5"/>
+          <line x1="400" y1="335" x2="400" y2="358" stroke="#1a1612" stroke-width="1.5" marker-end="url(#arrCs)"/>
+
+          <text x="400" y="378" text-anchor="middle" class="label-jp" font-size="13" font-weight="600" fill="#1a1612">CS部署メンバーへの支給</text>
+        </svg>
+      </div>
+
+      <div class="example">
+        <span class="example-label">CASE 01</span>
+        <div class="example-title">計算例 ― 成約金額 ¥3,900,000 ／ ワーカー4名 ／ メンバー6名</div>
+
+        <h4 class="subsec" style="margin-top:6px">基本固定費</h4>
+        <div class="calc-row"><span class="label">統括 ＋ 第二統括</span><span class="val">¥80,000</span></div>
+        <div class="calc-row"><span class="label">ワーカー 4名 × ¥20,000</span><span class="val">¥80,000</span></div>
+        <div class="calc-row total"><span class="label">案件月額固定費</span><span class="val">¥160,000</span></div>
+
+        <h4 class="subsec" style="margin-top:18px">インセンティブ</h4>
+        <div class="calc-row"><span class="label">⌊3,900,000 ÷ 1,000,000⌋ ＝ 3</span><span class="val">3 段</span></div>
+        <div class="calc-row"><span class="label">対象金額：3 × 1,000,000</span><span class="val">¥3,000,000</span></div>
+        <div class="calc-row"><span class="label">× 1.5%</span><span class="val">¥45,000</span></div>
+        <div class="calc-row total"><span class="label">チームインセンティブ</span><span class="val">¥45,000</span></div>
+
+        <h4 class="subsec" style="margin-top:18px">メンバー分配（6名均等）</h4>
+        <div class="calc-row"><span class="label">¥45,000 ÷ 6名</span><span class="val">¥7,500 ／ 1名</span></div>
+      </div>
+
+      <a href="#ch3" class="back-top">▲ TOP</a>
+    </div>
+
+    <!-- ═══════ 営業部署 ═══════ -->
+    <div class="dept" data-color="sales" id="dept-sales">
+      <div class="dept-header">
+        <span class="dept-tag">SECTION 2</span>
+        <div class="dept-title">営業部署</div>
+        <div class="dept-en">SALES</div>
+      </div>
+
+      <p class="lead">営業部署の報酬は、<b>「マネジメントレイヤー報酬（案件売上の3％枠）」</b>と<b>「クローザー報酬（販売金額連動）」</b>の二系統で構成される。両者は独立して算定し、<b>同一人物が兼任する場合のみ合算</b>して支給する。</p>
+
+      <h3 class="section-title">第8条 ― マネジメントレイヤー報酬</h3>
+      <p>案件売上の<b>3%</b>を、統括・マネージャー陣に分配する。</p>
+
+      <table>
+        <thead><tr><th style="width:30%">役割</th><th style="width:25%">案件売上比</th><th>備考</th></tr></thead>
+        <tbody>
+          <tr><td>統括</td><td class="num shu">1.0%</td><td>固定</td></tr>
+          <tr><td>マネージャー陣（合計）</td><td class="num shu">2.0%</td><td>サブマネージャーが居る場合は下記で再分配</td></tr>
+        </tbody>
+      </table>
+
+      <h4 class="subsec">サブマネージャーが居る場合の再分配</h4>
+      <p>マネージャー陣の2%を、<b>マネージャー : サブマネージャー＝2 : 1</b>の比率で分配する。</p>
+      <table>
+        <thead><tr><th style="width:30%">役割</th><th>案件売上比</th><th>計算</th></tr></thead>
+        <tbody>
+          <tr><td>マネージャー</td><td class="num shu">約 1.333%</td><td class="code">2% × 2/3</td></tr>
+          <tr><td>サブマネージャー</td><td class="num shu">約 0.667%</td><td class="code">2% × 1/3</td></tr>
+        </tbody>
+      </table>
+
+      <h3 class="section-title">第9条 ― クローザー報酬</h3>
+      <p>クローザーは、自身が決めた<b>販売金額</b>に対する一定比率を直接報酬として受け取る。マネジメントレイヤーの3%枠とは別系統で計算する。</p>
+
+      <table>
+        <thead><tr><th style="width:30%">区分</th><th>販売金額に対する％</th></tr></thead>
+        <tbody>
+          <tr><td>フロント</td><td class="num shu">5.0%</td></tr>
+          <tr><td>アップ</td><td class="num shu">12.0%</td></tr>
+        </tbody>
+      </table>
+
+      <div class="callout indigo">
+        <div class="callout-label">兼任の取扱い</div>
+        マネジメント枠（3%）とクローザー枠（5% / 12%）は独立した計算枠である。<b>同一人物が両方の役割を兼ねる場合のみ、両方の報酬を合算</b>して受給する。
+      </div>
+
+      <div class="diagram-wrap">
+        <div class="diagram-title">図 2 ／ 営業部署 報酬計算フロー</div>
+        <div class="diagram-caption">案件売上3%のマネジメント枠と、販売金額連動のクローザー枠を独立して計算。</div>
+        <svg class="diagram-svg svg-flow" viewBox="0 0 800 460" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="arrSales" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a1612"/>
+            </marker>
+          </defs>
+          <rect x="300" y="20" width="200" height="60" rx="3" fill="#fff" stroke="#1a1612" stroke-width="1.5"/>
+          <text x="400" y="45" text-anchor="middle" class="label-jp" font-size="11" fill="#7a6f60" letter-spacing="2">PROJECT REVENUE</text>
+          <text x="400" y="68" text-anchor="middle" class="label-jp" font-size="18" font-weight="600" fill="#1a1612">案件売上</text>
+
+          <line x1="350" y1="80" x2="180" y2="120" stroke="#1a1612" stroke-width="1.5" marker-end="url(#arrSales)"/>
+          <line x1="450" y1="80" x2="620" y2="120" stroke="#1a1612" stroke-width="1.5" marker-end="url(#arrSales)"/>
+
+          <rect x="40" y="120" width="280" height="44" rx="3" fill="#a8201a" stroke="#7a1612" stroke-width="1.5"/>
+          <text x="180" y="148" text-anchor="middle" class="label-jp" font-size="14" font-weight="600" fill="#f6f1e7">マネジメント枠（売上 × 3%）</text>
+
+          <rect x="50" y="186" width="120" height="50" rx="3" fill="#fff" stroke="#a8201a" stroke-width="1.5"/>
+          <text x="110" y="206" text-anchor="middle" class="label-jp" font-size="13" font-weight="600">統括</text>
+          <text x="110" y="223" text-anchor="middle" font-size="12" fill="#a8201a" font-family="JetBrains Mono">売上 × 1%</text>
+
+          <rect x="190" y="186" width="120" height="50" rx="3" fill="#fff" stroke="#a8201a" stroke-width="1.5"/>
+          <text x="250" y="206" text-anchor="middle" class="label-jp" font-size="13" font-weight="600">マネージャー陣</text>
+          <text x="250" y="223" text-anchor="middle" font-size="12" fill="#a8201a" font-family="JetBrains Mono">売上 × 2%</text>
+
+          <line x1="180" y1="164" x2="110" y2="184" stroke="#a8201a" stroke-width="1.2" marker-end="url(#arrSales)"/>
+          <line x1="180" y1="164" x2="250" y2="184" stroke="#a8201a" stroke-width="1.2" marker-end="url(#arrSales)"/>
+
+          <line x1="250" y1="236" x2="250" y2="262" stroke="#a8201a" stroke-width="1.2" stroke-dasharray="3 3"/>
+          <text x="250" y="256" text-anchor="middle" font-size="10" fill="#7a6f60">サブ有り時 2:1</text>
+
+          <rect x="180" y="266" width="64" height="44" rx="3" fill="#fff" stroke="#a8201a" stroke-width="1" stroke-dasharray="3 2"/>
+          <text x="212" y="284" text-anchor="middle" font-size="10" class="label-jp" font-weight="600">マネ</text>
+          <text x="212" y="300" text-anchor="middle" font-size="10" fill="#a8201a" font-family="JetBrains Mono">≈1.33%</text>
+          <rect x="252" y="266" width="64" height="44" rx="3" fill="#fff" stroke="#a8201a" stroke-width="1" stroke-dasharray="3 2"/>
+          <text x="284" y="284" text-anchor="middle" font-size="10" class="label-jp" font-weight="600">サブ</text>
+          <text x="284" y="300" text-anchor="middle" font-size="10" fill="#a8201a" font-family="JetBrains Mono">≈0.67%</text>
+
+          <rect x="480" y="120" width="280" height="44" rx="3" fill="#1a1612" stroke="#1a1612" stroke-width="1.5"/>
+          <text x="620" y="148" text-anchor="middle" class="label-jp" font-size="14" font-weight="600" fill="#f6f1e7">クローザー枠（販売金額連動）</text>
+
+          <rect x="490" y="186" width="125" height="50" rx="3" fill="#fff" stroke="#a8201a" stroke-width="1.5"/>
+          <text x="552" y="206" text-anchor="middle" class="label-jp" font-size="13" font-weight="600">フロント</text>
+          <text x="552" y="223" text-anchor="middle" font-size="12" fill="#a8201a" font-family="JetBrains Mono">販売 × 5%</text>
+
+          <rect x="625" y="186" width="125" height="50" rx="3" fill="#fff" stroke="#a8201a" stroke-width="1.5"/>
+          <text x="687" y="206" text-anchor="middle" class="label-jp" font-size="13" font-weight="600">アップ</text>
+          <text x="687" y="223" text-anchor="middle" font-size="12" fill="#a8201a" font-family="JetBrains Mono">販売 × 12%</text>
+
+          <line x1="620" y1="164" x2="552" y2="184" stroke="#a8201a" stroke-width="1.2" marker-end="url(#arrSales)"/>
+          <line x1="620" y1="164" x2="687" y2="184" stroke="#a8201a" stroke-width="1.2" marker-end="url(#arrSales)"/>
+
+          <line x1="180" y1="320" x2="180" y2="370" stroke="#1a1612" stroke-width="1.5"/>
+          <line x1="620" y1="236" x2="620" y2="370" stroke="#1a1612" stroke-width="1.5"/>
+          <line x1="180" y1="370" x2="620" y2="370" stroke="#1a1612" stroke-width="1.5"/>
+          <line x1="400" y1="370" x2="400" y2="395" stroke="#1a1612" stroke-width="1.5" marker-end="url(#arrSales)"/>
+
+          <rect x="280" y="395" width="240" height="44" rx="3" fill="#a8201a" stroke="#7a1612" stroke-width="1.5"/>
+          <text x="400" y="423" text-anchor="middle" class="label-jp" font-size="14" font-weight="600" fill="#f6f1e7">営業部署メンバーへの支給</text>
+        </svg>
+      </div>
+
+      <div class="example">
+        <span class="example-label">CASE 02</span>
+        <div class="example-title">計算例 ― 案件売上 ¥10,000,000（フロント ¥3,000,000／アップ ¥7,000,000）</div>
+
+        <h4 class="subsec" style="margin-top:6px">マネジメント枠（売上 × 3%）</h4>
+        <div class="calc-row"><span class="label">統括（売上 × 1%）</span><span class="val">¥100,000</span></div>
+        <div class="calc-row"><span class="label">マネージャー（売上 × 2% × 2/3） ※サブ有り</span><span class="val">¥133,333</span></div>
+        <div class="calc-row"><span class="label">サブマネージャー（売上 × 2% × 1/3）</span><span class="val">¥66,667</span></div>
+        <div class="calc-row subtotal"><span class="label">マネジメント枠 小計</span><span class="val">¥300,000</span></div>
+
+        <h4 class="subsec" style="margin-top:18px">クローザー枠</h4>
+        <div class="calc-row"><span class="label">フロント担当（¥3,000,000 × 5%）</span><span class="val">¥150,000</span></div>
+        <div class="calc-row"><span class="label">アップ担当（¥7,000,000 × 12%）</span><span class="val">¥840,000</span></div>
+        <div class="calc-row subtotal"><span class="label">クローザー枠 小計</span><span class="val">¥990,000</span></div>
+
+        <div class="calc-row total"><span class="label">営業部署 報酬合計</span><span class="val">¥1,290,000</span></div>
+      </div>
+
+      <a href="#ch3" class="back-top">▲ TOP</a>
+    </div>
+
+    <!-- ═══════ 動画部署 ═══════ -->
+    <div class="dept" data-color="video" id="dept-video">
+      <div class="dept-header">
+        <span class="dept-tag">SECTION 3</span>
+        <div class="dept-title">動画部署</div>
+        <div class="dept-en">VIDEO</div>
+      </div>
+
+      <p class="lead">動画部署の報酬は、<b>YouTube経由でオプトしたリスト由来の売上およびYouTubeアドセンス売上から経費を控除した「粗利」</b>を分配原資とし、案件区分に応じた一定比率で算定する。</p>
+
+      <h3 class="section-title">第10条 ― 計算項目の定義</h3>
+      <table>
+        <thead><tr><th style="width:30%">項目</th><th>定義</th></tr></thead>
+        <tbody>
+          <tr><td>売上（フロント＆アップ）</td><td><b>YouTube経由でオプトしたリスト</b>を起点に発生したフロント・アップの合計売上</td></tr>
+          <tr><td>アドセンス売上</td><td>YouTubeアドセンス指定口座への<b>着金金額</b>（純額ベース）</td></tr>
+          <tr><td>経費</td><td>当該動画案件に紐づく直接費および按分された共通費</td></tr>
+          <tr><td>粗利</td><td>上記より算出（次条参照）</td></tr>
+        </tbody>
+      </table>
+
+      <h3 class="section-title">第11条 ― 粗利および報酬の計算式</h3>
+
+      <div class="formula">
+        <span class="fbox">売上</span>
+        <span class="op">＋</span>
+        <span class="fbox">アドセンス売上</span>
+        <span class="op">−</span>
+        <span class="fbox">経費</span>
+        <span class="eq">＝</span>
+        <span class="fbox result">粗利</span>
+      </div>
+
+      <h4 class="subsec">案件区分別の報酬率</h4>
+      <table>
+        <thead><tr><th style="width:40%">案件区分</th><th>動画部署報酬</th><th>備考</th></tr></thead>
+        <tbody>
+          <tr><td>通常案件</td><td class="num shu">粗利 × 10%</td><td>原則ルール</td></tr>
+          <tr><td>イルカジュニア案件</td><td class="num shu">粗利 × 14%</td><td>特例</td></tr>
+          <tr><td>JV案件</td><td class="num">別途協議</td><td>動画部署が絡む場合に発生（％は案件ごと）</td></tr>
+        </tbody>
+      </table>
+
+      <div class="formula">
+        <span class="fbox">粗利</span>
+        <span class="op">×</span>
+        <span class="fbox">案件区分別％</span>
+        <span class="eq">＝</span>
+        <span class="fbox result">動画部署報酬</span>
+      </div>
+
+      <div class="diagram-wrap">
+        <div class="diagram-title">図 3 ／ 動画部署 報酬計算フロー</div>
+        <div class="diagram-caption">売上＋アドセンスから経費を控除した粗利に、案件区分別の比率を乗じる。</div>
+        <svg class="diagram-svg svg-flow" viewBox="0 0 800 380" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="arrVid" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a1612"/>
+            </marker>
+          </defs>
+          <rect x="40" y="50" width="180" height="60" rx="3" fill="#fff" stroke="#4a5a3a" stroke-width="1.5"/>
+          <text x="130" y="73" text-anchor="middle" class="label-jp" font-size="11" fill="#7a6f60">REVENUE</text>
+          <text x="130" y="95" text-anchor="middle" class="label-jp" font-size="15" font-weight="600">売上（F＋アップ）</text>
+
+          <rect x="40" y="130" width="180" height="60" rx="3" fill="#fff" stroke="#4a5a3a" stroke-width="1.5"/>
+          <text x="130" y="153" text-anchor="middle" class="label-jp" font-size="11" fill="#7a6f60">ADSENSE</text>
+          <text x="130" y="175" text-anchor="middle" class="label-jp" font-size="15" font-weight="600">アドセンス売上</text>
+
+          <rect x="40" y="220" width="180" height="50" rx="3" fill="#fff" stroke="#a8201a" stroke-width="1.5" stroke-dasharray="4 3"/>
+          <text x="130" y="252" text-anchor="middle" class="label-jp" font-size="14" fill="#a8201a" font-weight="600">− 経費</text>
+
+          <line x1="220" y1="80" x2="290" y2="140" stroke="#1a1612" stroke-width="1.5"/>
+          <line x1="220" y1="160" x2="290" y2="160" stroke="#1a1612" stroke-width="1.5"/>
+          <line x1="220" y1="245" x2="290" y2="180" stroke="#a8201a" stroke-width="1.5"/>
+
+          <circle cx="310" cy="160" r="22" fill="#1a1612" stroke="#4a5a3a" stroke-width="2"/>
+          <text x="310" y="166" text-anchor="middle" font-size="14" fill="#f6f1e7" font-weight="600">±</text>
+
+          <line x1="332" y1="160" x2="400" y2="160" stroke="#1a1612" stroke-width="1.5" marker-end="url(#arrVid)"/>
+
+          <rect x="410" y="125" width="180" height="70" rx="3" fill="#4a5a3a" stroke="#3a4730" stroke-width="1.5"/>
+          <text x="500" y="150" text-anchor="middle" class="label-jp" font-size="11" fill="#f6f1e7" letter-spacing="2">GROSS PROFIT</text>
+          <text x="500" y="178" text-anchor="middle" class="label-jp" font-size="22" font-weight="600" fill="#f6f1e7">粗利</text>
+
+          <line x1="590" y1="160" x2="650" y2="160" stroke="#1a1612" stroke-width="1.5" marker-end="url(#arrVid)"/>
+
+          <rect x="660" y="100" width="120" height="120" rx="3" fill="#fff" stroke="#a8201a" stroke-width="1.5"/>
+          <text x="720" y="125" text-anchor="middle" font-size="11" fill="#7a6f60">通常</text>
+          <text x="720" y="145" text-anchor="middle" font-size="14" font-weight="600" fill="#a8201a" font-family="JetBrains Mono">× 10%</text>
+          <line x1="670" y1="155" x2="770" y2="155" stroke="#d4c8af" stroke-width="1"/>
+          <text x="720" y="173" text-anchor="middle" font-size="11" fill="#7a6f60">イルカJr</text>
+          <text x="720" y="193" text-anchor="middle" font-size="14" font-weight="600" fill="#a8201a" font-family="JetBrains Mono">× 14%</text>
+          <text x="720" y="212" text-anchor="middle" font-size="10" fill="#7a6f60">JV：別途</text>
+
+          <line x1="500" y1="195" x2="500" y2="280" stroke="#1a1612" stroke-width="1.5"/>
+          <line x1="720" y1="220" x2="720" y2="280" stroke="#1a1612" stroke-width="1.5"/>
+          <line x1="500" y1="280" x2="720" y2="280" stroke="#1a1612" stroke-width="1.5"/>
+          <line x1="610" y1="280" x2="610" y2="305" stroke="#1a1612" stroke-width="1.5" marker-end="url(#arrVid)"/>
+
+          <rect x="490" y="305" width="240" height="44" rx="3" fill="#4a5a3a" stroke="#3a4730" stroke-width="1.5"/>
+          <text x="610" y="333" text-anchor="middle" class="label-jp" font-size="14" font-weight="600" fill="#f6f1e7">動画部署 報酬</text>
+        </svg>
+      </div>
+
+      <div class="example">
+        <span class="example-label">CASE 03</span>
+        <div class="example-title">計算例 ― 通常案件 ／ 売上 ¥5,000,000＋アドセンス ¥800,000／経費 ¥1,800,000</div>
+
+        <div class="calc-row"><span class="label">売上（F＋アップ）</span><span class="val">¥5,000,000</span></div>
+        <div class="calc-row"><span class="label">＋ アドセンス売上</span><span class="val">¥800,000</span></div>
+        <div class="calc-row"><span class="label">－ 経費</span><span class="val minus">▲ 1,800,000</span></div>
+        <div class="calc-row total"><span class="label">粗利</span><span class="val">¥4,000,000</span></div>
+
+        <h4 class="subsec" style="margin-top:18px">報酬計算（通常案件 10%）</h4>
+        <div class="calc-row"><span class="label">¥4,000,000 × 10%</span><span class="val">¥400,000</span></div>
+        <div class="calc-row total"><span class="label">動画部署 報酬</span><span class="val">¥400,000</span></div>
+
+        <div class="calc-note">
+          ※ 同じ粗利でイルカジュニア案件の場合：¥4,000,000 × 14% ＝ ¥560,000
+        </div>
+      </div>
+
+      <a href="#ch3" class="back-top">▲ TOP</a>
+    </div>
+
+    <!-- ═══════ 広告部署 ═══════ -->
+    <div class="dept" data-color="ad" id="dept-ad">
+      <div class="dept-header">
+        <span class="dept-tag">SECTION 4</span>
+        <div class="dept-title">広告部署</div>
+        <div class="dept-en">ADVERTISING</div>
+      </div>
+
+      <p class="lead">広告部署の報酬は、<b>「統括枠」</b>と<b>「運用者・製作者枠」</b>の二系統で構成し、それぞれ独立して算定する。物販を含むバックエンド・クロスセル案件は別レートを適用する。</p>
+
+      <!-- ───── 統括枠 ───── -->
+      <h3 class="section-title">第12条 ― 統括（第一統括・第二統括・リーダー）報酬</h3>
+      <p>広告経由売上から、広告費および諸経費を控除した残額に5%を乗じた金額を、<b>第一統括・第二統括・リーダー</b>の3者で分配する。</p>
+
+      <div class="formula">
+        <span class="fbox">広告経由売上</span>
+        <span class="op">−</span>
+        <span class="fbox">（広告費 ＋ 諸経費）</span>
+        <span class="eq">＝</span>
+        <span class="fbox alt">調整後利益</span>
+      </div>
+      <div class="formula">
+        <span class="fbox alt">調整後利益</span>
+        <span class="op">×</span>
+        <span class="fbox">5%</span>
+        <span class="eq">＝</span>
+        <span class="fbox result">統括枠 合計</span>
+      </div>
+
+      <p>統括枠合計を、第一統括・第二統括・リーダーの3者で分配する（具体的な分配比率は別途定める）。</p>
+
+      <!-- ───── 運用者・製作者 ───── -->
+      <h3 class="section-title">第13条 ― 運用者・製作者報酬</h3>
+
+      <h4 class="subsec">通常パターン</h4>
+      <p>原則として、フロント・アップそれぞれ別レートで算定し、合算する。</p>
+
+      <div class="formula">
+        <span class="fbox">（広告経由フロント売上 − 広告費）× 6%</span>
+        <span class="eq">＝</span>
+        <span class="fbox alt">a</span>
+      </div>
+      <div class="formula">
+        <span class="fbox">広告経由アップ売上 × 2%</span>
+        <span class="eq">＝</span>
+        <span class="fbox alt">b</span>
+      </div>
+      <div class="formula">
+        <span class="fbox alt">a ＋ b</span>
+        <span class="op">＝</span>
+        <span class="fbox result">運用・製作枠 合計</span>
+      </div>
+
+      <h4 class="subsec">特例パターン</h4>
+      <p>下記の条件を満たす場合は、通常パターンに代えて、フロント・アップを合算した売上で計算する。</p>
+
+      <div class="callout indigo">
+        <div class="callout-label">適用条件</div>
+        <b>フロント売上 ＜ 広告費</b>　かつ　<b>フロント＋アップ売上 ＞ 広告費</b>
+      </div>
+
+      <div class="formula">
+        <span class="fbox">（フロント売上 ＋ アップ売上 − 広告費）</span>
+        <span class="op">×</span>
+        <span class="fbox">2%</span>
+        <span class="eq">＝</span>
+        <span class="fbox result">運用・製作枠 合計</span>
+      </div>
+
+      <h4 class="subsec">運用者・製作者への分配</h4>
+      <p>通常・特例いずれの場合も、算出した運用・製作枠合計を、<b>運用者 7：製作者 3</b>の比率で分配する。</p>
+
+      <div class="formula">
+        <span class="fbox">運用・製作枠 合計</span>
+        <span class="op">→</span>
+        <span class="fbox">運用者 70%</span>
+        <span class="op">／</span>
+        <span class="fbox">製作者 30%</span>
+      </div>
+
+      <div class="callout">
+        <div class="callout-label gold">運用者の特例レベ報酬</div>
+        運用者によっては、契約により<b>通常より高いレベ報酬</b>が設定されている場合がある。該当者の有無は案件契約時に確認し、本マニュアルの計算結果と整合させること。
+      </div>
+
+      <!-- ───── バックエンド ───── -->
+      <h3 class="section-title">第14条 ― バックエンド・クロスセル案件（物販を含む）</h3>
+      <p>物販を含むバックエンド・クロスセル案件については、別途次の比率を適用する。</p>
+
+      <table>
+        <thead><tr><th style="width:40%">役割</th><th>比率</th></tr></thead>
+        <tbody>
+          <tr><td>運用者・製作者</td><td class="num shu">2.0%</td></tr>
+          <tr><td>統括・リーダー</td><td class="num shu">2.0%</td></tr>
+        </tbody>
+      </table>
+
+      <div class="callout shu">
+        <div class="callout-label">未確定事項</div>
+        バックエンド・クロスセルの2%の<b>母数</b>（売上・粗利・調整後利益のいずれか）について、現時点で未確定。確定後に本マニュアルへ追記する（付録 確認事項リスト 項番①参照）。
+      </div>
+
+      <!-- 図式 広告 -->
+      <div class="diagram-wrap">
+        <div class="diagram-title">図 4 ／ 広告部署 報酬計算フロー（通常案件）</div>
+        <div class="diagram-caption">統括枠（調整後利益×5%）と、運用者・製作者枠（通常 a＋b ／ 特例 2%）を並列に算定。</div>
+        <svg class="diagram-svg svg-flow" viewBox="0 0 800 480" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="arrAd" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a1612"/>
+            </marker>
+          </defs>
+
+          <!-- 入力 -->
+          <rect x="20" y="20" width="140" height="44" rx="3" fill="#fff" stroke="#9a7b3f" stroke-width="1.5"/>
+          <text x="90" y="48" text-anchor="middle" class="label-jp" font-size="12" font-weight="600">フロント売上</text>
+
+          <rect x="170" y="20" width="140" height="44" rx="3" fill="#fff" stroke="#9a7b3f" stroke-width="1.5"/>
+          <text x="240" y="48" text-anchor="middle" class="label-jp" font-size="12" font-weight="600">アップ売上</text>
+
+          <rect x="320" y="20" width="140" height="44" rx="3" fill="#fff" stroke="#a8201a" stroke-width="1.5" stroke-dasharray="4 3"/>
+          <text x="390" y="48" text-anchor="middle" class="label-jp" font-size="12" fill="#a8201a" font-weight="600">広告費</text>
+
+          <rect x="470" y="20" width="140" height="44" rx="3" fill="#fff" stroke="#a8201a" stroke-width="1.5" stroke-dasharray="4 3"/>
+          <text x="540" y="48" text-anchor="middle" class="label-jp" font-size="12" fill="#a8201a" font-weight="600">諸経費</text>
+
+          <rect x="620" y="20" width="160" height="44" rx="3" fill="#fff" stroke="#9a7b3f" stroke-width="1.5"/>
+          <text x="700" y="48" text-anchor="middle" class="label-jp" font-size="12" font-weight="600">広告経由売上（合計）</text>
+
+          <!-- 統括枠 -->
+          <rect x="440" y="100" width="340" height="60" rx="3" fill="#fff" stroke="#9a7b3f" stroke-width="1.5"/>
+          <text x="610" y="120" text-anchor="middle" class="label-jp" font-size="11" fill="#7a6f60" letter-spacing="2">SUPERVISOR &amp; LEADER</text>
+          <text x="610" y="140" text-anchor="middle" font-size="12" font-weight="600" fill="#9a7b3f" font-family="JetBrains Mono">(広告経由売上 − (広告費＋諸経費))</text>
+          <text x="610" y="155" text-anchor="middle" font-size="13" font-weight="600" fill="#a8201a" font-family="JetBrains Mono">× 5%</text>
+
+          <line x1="700" y1="64" x2="610" y2="98" stroke="#1a1612" stroke-width="1.2" marker-end="url(#arrAd)"/>
+          <line x1="390" y1="64" x2="500" y2="98" stroke="#a8201a" stroke-width="1.2" stroke-dasharray="3 2" marker-end="url(#arrAd)"/>
+          <line x1="540" y1="64" x2="540" y2="98" stroke="#a8201a" stroke-width="1.2" stroke-dasharray="3 2" marker-end="url(#arrAd)"/>
+
+          <line x1="610" y1="160" x2="610" y2="190" stroke="#1a1612" stroke-width="1.5" marker-end="url(#arrAd)"/>
+
+          <rect x="440" y="192" width="340" height="46" rx="3" fill="#9a7b3f" stroke="#7a5f30" stroke-width="1.5"/>
+          <text x="610" y="221" text-anchor="middle" class="label-jp" font-size="13" font-weight="600" fill="#f6f1e7">第一統括＋第二統括＋リーダーで分配</text>
+
+          <!-- 運用者・製作者枠 -->
+          <rect x="20" y="100" width="400" height="60" rx="3" fill="#fff" stroke="#1a1612" stroke-width="1.5"/>
+          <text x="220" y="120" text-anchor="middle" class="label-jp" font-size="11" fill="#7a6f60" letter-spacing="2">OPERATOR &amp; PRODUCER (通常)</text>
+          <text x="220" y="140" text-anchor="middle" font-size="11" font-weight="600" fill="#1a1612" font-family="JetBrains Mono">a = (F売上−広告費)×6%</text>
+          <text x="220" y="155" text-anchor="middle" font-size="11" font-weight="600" fill="#1a1612" font-family="JetBrains Mono">b = アップ売上×2%　／　a＋b</text>
+
+          <line x1="90" y1="64" x2="120" y2="98" stroke="#1a1612" stroke-width="1.2" stroke-dasharray="3 2"/>
+          <line x1="240" y1="64" x2="220" y2="98" stroke="#1a1612" stroke-width="1.2" stroke-dasharray="3 2"/>
+          <line x1="390" y1="64" x2="320" y2="98" stroke="#a8201a" stroke-width="1.2" stroke-dasharray="3 2"/>
+
+          <rect x="20" y="170" width="400" height="44" rx="3" fill="#fff" stroke="#1a1612" stroke-width="1.2" stroke-dasharray="4 2"/>
+          <text x="220" y="187" text-anchor="middle" class="label-jp" font-size="10" fill="#7a6f60">特例：F＜広告費 かつ F＋アップ＞広告費</text>
+          <text x="220" y="205" text-anchor="middle" font-size="11" font-weight="600" fill="#a8201a" font-family="JetBrains Mono">(F＋アップ−広告費) × 2%</text>
+
+          <line x1="220" y1="214" x2="220" y2="240" stroke="#1a1612" stroke-width="1.2" stroke-dasharray="3 3"/>
+          <text x="280" y="232" font-size="10" fill="#7a6f60">↑ 通常との二者択一</text>
+
+          <rect x="20" y="248" width="400" height="46" rx="3" fill="#1a1612" stroke="#1a1612" stroke-width="1.5"/>
+          <text x="220" y="277" text-anchor="middle" class="label-jp" font-size="13" font-weight="600" fill="#f6f1e7">運用者 7：製作者 3 で分配</text>
+
+          <!-- 統合 -->
+          <line x1="220" y1="294" x2="220" y2="360" stroke="#1a1612" stroke-width="1.5"/>
+          <line x1="610" y1="238" x2="610" y2="360" stroke="#1a1612" stroke-width="1.5"/>
+          <line x1="220" y1="360" x2="610" y2="360" stroke="#1a1612" stroke-width="1.5"/>
+          <line x1="400" y1="360" x2="400" y2="395" stroke="#1a1612" stroke-width="1.5" marker-end="url(#arrAd)"/>
+
+          <rect x="280" y="395" width="240" height="44" rx="3" fill="#a8201a" stroke="#7a1612" stroke-width="1.5"/>
+          <text x="400" y="423" text-anchor="middle" class="label-jp" font-size="14" font-weight="600" fill="#f6f1e7">広告部署メンバーへの支給</text>
+
+          <text x="400" y="465" text-anchor="middle" font-size="11" fill="#7a6f60" letter-spacing="2">バックエンド・クロスセル案件は別途 第14条を適用</text>
+        </svg>
+      </div>
+
+      <div class="example">
+        <span class="example-label">CASE 04</span>
+        <div class="example-title">計算例（通常） ― 広告経由売上：F ¥5,000,000・アップ ¥3,000,000／広告費 ¥1,500,000・諸経費 ¥500,000</div>
+
+        <h4 class="subsec" style="margin-top:6px">統括枠</h4>
+        <div class="calc-row"><span class="label">広告経由売上（F ＋ アップ）</span><span class="val">¥8,000,000</span></div>
+        <div class="calc-row"><span class="label">－ 広告費</span><span class="val minus">▲ 1,500,000</span></div>
+        <div class="calc-row"><span class="label">－ 諸経費</span><span class="val minus">▲ 500,000</span></div>
+        <div class="calc-row subtotal"><span class="label">調整後利益</span><span class="val">¥6,000,000</span></div>
+        <div class="calc-row"><span class="label">× 5%</span><span class="val">¥300,000</span></div>
+        <div class="calc-row total"><span class="label">統括枠 合計（第一統括＋第二統括＋リーダー）</span><span class="val">¥300,000</span></div>
+
+        <h4 class="subsec" style="margin-top:18px">運用者・製作者枠（通常パターン）</h4>
+        <div class="calc-row"><span class="label">a ＝（F売上 ¥5,000,000 − 広告費 ¥1,500,000）× 6%</span><span class="val">¥210,000</span></div>
+        <div class="calc-row"><span class="label">b ＝ アップ売上 ¥3,000,000 × 2%</span><span class="val">¥60,000</span></div>
+        <div class="calc-row subtotal"><span class="label">a ＋ b</span><span class="val">¥270,000</span></div>
+        <div class="calc-row"><span class="label">運用者（70%）</span><span class="val">¥189,000</span></div>
+        <div class="calc-row"><span class="label">製作者（30%）</span><span class="val">¥81,000</span></div>
+        <div class="calc-row total"><span class="label">運用・製作枠 合計</span><span class="val">¥270,000</span></div>
+
+        <div class="calc-row total" style="margin-top:14px;background:var(--gold)"><span class="label">広告部署 報酬合計（通常案件）</span><span class="val">¥570,000</span></div>
+      </div>
+
+      <div class="example" style="border-top-color:var(--shu)">
+        <span class="example-label" style="background:var(--shu)">CASE 05</span>
+        <div class="example-title">計算例（特例） ― F売上 ¥1,000,000・アップ ¥3,500,000／広告費 ¥1,500,000</div>
+        <p style="font-size:13px;color:var(--ink-soft);margin-bottom:12px">条件確認：F売上 ¥1,000,000 ＜ 広告費 ¥1,500,000　かつ　F＋アップ ¥4,500,000 ＞ 広告費 ¥1,500,000　→ <b>特例適用</b></p>
+
+        <div class="calc-row"><span class="label">F ＋ アップ売上</span><span class="val">¥4,500,000</span></div>
+        <div class="calc-row"><span class="label">－ 広告費</span><span class="val minus">▲ 1,500,000</span></div>
+        <div class="calc-row subtotal"><span class="label">差引</span><span class="val">¥3,000,000</span></div>
+        <div class="calc-row"><span class="label">× 2%</span><span class="val">¥60,000</span></div>
+        <div class="calc-row subtotal"><span class="label">運用・製作枠 合計</span><span class="val">¥60,000</span></div>
+        <div class="calc-row"><span class="label">運用者（70%）</span><span class="val">¥42,000</span></div>
+        <div class="calc-row"><span class="label">製作者（30%）</span><span class="val">¥18,000</span></div>
+      </div>
+
+      <a href="#ch3" class="back-top">▲ TOP</a>
+    </div>
+
+  </section>
+
+  <!-- ═══════════════════════════════════ -->
+  <!-- ═══════════ 第4章 ═══════════ -->
+  <!-- ═══════════════════════════════════ -->
+  <section class="chapter" id="ch4">
+    <div class="chapter-header">
+      <div class="chapter-no">第 四 章</div>
+      <div class="chapter-title">案件分類別の純利益分配</div>
+      <div class="chapter-en">Project-Level Distribution</div>
+    </div>
+
+    <p class="lead">本章では、案件全体の<b>純利益</b>に対するレベニューシェア分配ルールを定める。エバーグリーン案件と、外部パートナーが参画するJV企画とで計算ロジックが異なる。</p>
+
+    <!-- ═══════ エバーグリーン ═══════ -->
+    <div class="dept" data-color="eg" id="case-eg">
+      <div class="dept-header">
+        <span class="dept-tag">SECTION 1</span>
+        <div class="dept-title">エバーグリーン案件</div>
+        <div class="dept-en">EVERGREEN</div>
+      </div>
+
+      <p class="lead">エバーグリーン案件は、外部パートナーが参画しない当社単独運用の継続案件である。<b>売上から経費を控除した純利益</b>を、レベニューシェアメンバーに事前合意した配分率で分配する。</p>
+
+      <h3 class="section-title">第15条 ― 純利益の算定</h3>
+      <div class="formula">
+        <span class="fbox">売上</span>
+        <span class="op">−</span>
+        <span class="fbox">経費</span>
+        <span class="eq">＝</span>
+        <span class="fbox result">純利益</span>
+      </div>
+
+      <h3 class="section-title">第16条 ― レベニューシェア分配</h3>
+      <p>純利益に対し、案件ごとに事前合意した配分率を乗じて、各メンバーの分配額を算定する。</p>
+
+      <div class="formula">
+        <span class="fbox">純利益</span>
+        <span class="op">×</span>
+        <span class="fbox">各メンバー配分率</span>
+        <span class="eq">＝</span>
+        <span class="fbox result">各メンバー分配額</span>
+      </div>
+
+      <div class="callout indigo">
+        <div class="callout-label">配分率の取り決め</div>
+        配分率は<b>案件開始時に書面で合意</b>する。期中の遡及変更は原則として認めない。
+      </div>
+
+      <div class="diagram-wrap">
+        <div class="diagram-title">図 5 ／ エバーグリーン案件 純利益分配フロー</div>
+        <div class="diagram-caption">売上から経費を控除した純利益を、レベニューシェアメンバー間で配分率に従い分配する。</div>
+        <svg class="diagram-svg svg-flow" viewBox="0 0 800 360" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="arrEg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a1612"/>
+            </marker>
+          </defs>
+
+          <rect x="40" y="60" width="160" height="80" rx="3" fill="#fff" stroke="#1a1612" stroke-width="1.5"/>
+          <text x="120" y="95" text-anchor="middle" class="label-jp" font-size="13" fill="#7a6f60">REVENUE</text>
+          <text x="120" y="120" text-anchor="middle" class="label-jp" font-size="22" font-weight="600" fill="#1a1612">売 上</text>
+
+          <line x1="200" y1="100" x2="270" y2="100" stroke="#1a1612" stroke-width="1.5" marker-end="url(#arrEg)"/>
+
+          <rect x="280" y="40" width="160" height="50" rx="3" fill="#fff" stroke="#a8201a" stroke-width="1.5" stroke-dasharray="4 3"/>
+          <text x="360" y="72" text-anchor="middle" class="label-jp" font-size="15" font-weight="600" fill="#a8201a">− 経費</text>
+          <line x1="360" y1="90" x2="360" y2="115" stroke="#a8201a" stroke-width="1.5" marker-end="url(#arrEg)"/>
+
+          <circle cx="360" cy="135" r="20" fill="#1a1612" stroke="#1f3046" stroke-width="2"/>
+          <text x="360" y="142" text-anchor="middle" font-size="20" font-weight="600" fill="#f6f1e7">−</text>
+
+          <line x1="382" y1="135" x2="450" y2="135" stroke="#1a1612" stroke-width="1.5" marker-end="url(#arrEg)"/>
+
+          <rect x="460" y="95" width="200" height="80" rx="3" fill="#1f3046" stroke="#13202f" stroke-width="1.5"/>
+          <text x="560" y="125" text-anchor="middle" class="label-jp" font-size="11" fill="#f6f1e7" letter-spacing="2">NET PROFIT</text>
+          <text x="560" y="155" text-anchor="middle" class="label-jp" font-size="22" font-weight="600" fill="#f6f1e7">純利益</text>
+
+          <line x1="560" y1="175" x2="560" y2="210" stroke="#1a1612" stroke-width="1.5"/>
+          <line x1="160" y1="210" x2="700" y2="210" stroke="#1a1612" stroke-width="1.5"/>
+          <line x1="160" y1="210" x2="160" y2="240" stroke="#1a1612" stroke-width="1.5" marker-end="url(#arrEg)"/>
+          <line x1="430" y1="210" x2="430" y2="240" stroke="#1a1612" stroke-width="1.5" marker-end="url(#arrEg)"/>
+          <line x1="700" y1="210" x2="700" y2="240" stroke="#1a1612" stroke-width="1.5" marker-end="url(#arrEg)"/>
+
+          <g>
+            <rect x="80" y="245" width="160" height="70" rx="3" fill="#fff" stroke="#1f3046" stroke-width="1.5"/>
+            <text x="160" y="270" text-anchor="middle" class="label-jp" font-size="11" fill="#7a6f60">MEMBER A</text>
+            <text x="160" y="295" text-anchor="middle" class="label-jp" font-size="16" font-weight="600">メンバーA</text>
+            <text x="160" y="310" text-anchor="middle" font-size="11" fill="#1f3046" font-family="JetBrains Mono">純利益 × 配分率</text>
+          </g>
+          <g>
+            <rect x="350" y="245" width="160" height="70" rx="3" fill="#fff" stroke="#1f3046" stroke-width="1.5"/>
+            <text x="430" y="270" text-anchor="middle" class="label-jp" font-size="11" fill="#7a6f60">MEMBER B</text>
+            <text x="430" y="295" text-anchor="middle" class="label-jp" font-size="16" font-weight="600">メンバーB</text>
+            <text x="430" y="310" text-anchor="middle" font-size="11" fill="#1f3046" font-family="JetBrains Mono">純利益 × 配分率</text>
+          </g>
+          <g>
+            <rect x="620" y="245" width="160" height="70" rx="3" fill="#fff" stroke="#1f3046" stroke-width="1.5"/>
+            <text x="700" y="270" text-anchor="middle" class="label-jp" font-size="11" fill="#7a6f60">MEMBER C</text>
+            <text x="700" y="295" text-anchor="middle" class="label-jp" font-size="16" font-weight="600">メンバーC</text>
+            <text x="700" y="310" text-anchor="middle" font-size="11" fill="#1f3046" font-family="JetBrains Mono">純利益 × 配分率</text>
+          </g>
+
+          <text x="400" y="345" text-anchor="middle" font-size="11" fill="#7a6f60" letter-spacing="3">EVERGREEN ／ Distribution from Net Profit</text>
+        </svg>
+      </div>
+
+      <div class="example">
+        <span class="example-label">CASE 06</span>
+        <div class="example-title">計算例 ― エバーグリーン案件 ／ 売上 ¥10,000,000・経費 ¥4,000,000</div>
+
+        <div class="calc-row"><span class="label">売上</span><span class="val">¥10,000,000</span></div>
+        <div class="calc-row"><span class="label">－ 経費</span><span class="val minus">▲ 4,000,000</span></div>
+        <div class="calc-row total"><span class="label">純利益</span><span class="val">¥6,000,000</span></div>
+
+        <h4 class="subsec" style="margin-top:18px">レベニューシェア分配（仮：A 50% / B 30% / C 20%）</h4>
+        <div class="calc-row"><span class="label">メンバーA（50%）</span><span class="val">¥3,000,000</span></div>
+        <div class="calc-row"><span class="label">メンバーB（30%）</span><span class="val">¥1,800,000</span></div>
+        <div class="calc-row"><span class="label">メンバーC（20%）</span><span class="val">¥1,200,000</span></div>
+
+        <div class="calc-note">※ 配分率は案件ごとに事前合意したものを適用する。本例は説明のための仮置き。</div>
+      </div>
+
+      <a href="#ch4" class="back-top">▲ TOP</a>
+    </div>
+
+    <!-- ═══════ JV企画 ═══════ -->
+    <div class="dept" data-color="jv" id="case-jv">
+      <div class="dept-header">
+        <span class="dept-tag">SECTION 2</span>
+        <div class="dept-title">JV企画（外部参画あり）</div>
+        <div class="dept-en">JOINT VENTURE</div>
+      </div>
+
+      <p class="lead">JV企画は、外部パートナーが参画する協業案件である。<b>外部報酬を控除した残額が純利益</b>となり、これを社内のレベニューシェアメンバーで分配する。<br>※今後のJV企画によっては別途協議の上で計算方法を決定する。</p>
+
+      <h3 class="section-title">第17条 ― 外部報酬の算定</h3>
+      <p>現段階での外部報酬は、<b>粗利の20%</b>と定める。粗利は売上から経費を控除した金額である。</p>
+
+      <div class="formula">
+        <span class="fbox">売上</span>
+        <span class="op">−</span>
+        <span class="fbox">経費</span>
+        <span class="eq">＝</span>
+        <span class="fbox alt">粗利</span>
+      </div>
+      <div class="formula">
+        <span class="fbox alt">粗利</span>
+        <span class="op">×</span>
+        <span class="fbox">20%</span>
+        <span class="eq">＝</span>
+        <span class="fbox result">外部報酬</span>
+      </div>
+
+      <h3 class="section-title">第18条 ― 純利益の算定</h3>
+      <p>外部報酬を、売上から経費および外部報酬を控除する形で純利益を算定する。</p>
+
+      <div class="formula">
+        <span class="fbox">売上</span>
+        <span class="op">−</span>
+        <span class="fbox">経費</span>
+        <span class="op">−</span>
+        <span class="fbox">外部報酬</span>
+        <span class="eq">＝</span>
+        <span class="fbox result">純利益</span>
+      </div>
+
+      <h3 class="section-title">第19条 ― レベニューシェア分配（66 : 33 : 1）</h3>
+      <p>純利益は、<b>66% : 33% : 1%（合計100%）</b>のレベニューシェアにより分配する。</p>
+
+      <table>
+        <thead><tr><th style="width:50%">配分先</th><th>配分率</th></tr></thead>
+        <tbody>
+          <tr><td>第1配分先</td><td class="num shu">66%</td></tr>
+          <tr><td>第2配分先</td><td class="num shu">33%</td></tr>
+          <tr><td>第3配分先</td><td class="num shu">1%</td></tr>
+        </tbody>
+      </table>
+
+      <div class="callout shu">
+        <div class="callout-label">JV企画の柔軟性</div>
+        本マニュアルに定める外部報酬20%および66:33:1の配分率は<b>現段階の標準値</b>である。今後のJV企画ごとに、別途協議の上で個別に決定する。協議結果は案件契約書に明記する。
+      </div>
+
+      <div class="diagram-wrap">
+        <div class="diagram-title">図 6 ／ JV企画 純利益分配フロー</div>
+        <div class="diagram-caption">粗利の20%を外部報酬として控除した純利益を、66:33:1で社内分配する。</div>
+        <svg class="diagram-svg svg-flow" viewBox="0 0 800 460" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="arrJv" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a1612"/>
+            </marker>
+          </defs>
+
+          <!-- 売上 -->
+          <rect x="40" y="40" width="160" height="60" rx="3" fill="#fff" stroke="#1a1612" stroke-width="1.5"/>
+          <text x="120" y="64" text-anchor="middle" class="label-jp" font-size="11" fill="#7a6f60">REVENUE</text>
+          <text x="120" y="86" text-anchor="middle" class="label-jp" font-size="18" font-weight="600">売 上</text>
+
+          <line x1="200" y1="70" x2="250" y2="100" stroke="#1a1612" stroke-width="1.5" marker-end="url(#arrJv)"/>
+
+          <!-- 経費控除 -->
+          <rect x="40" y="120" width="160" height="44" rx="3" fill="#fff" stroke="#a8201a" stroke-width="1.5" stroke-dasharray="4 3"/>
+          <text x="120" y="148" text-anchor="middle" class="label-jp" font-size="14" font-weight="600" fill="#a8201a">− 経費</text>
+          <line x1="200" y1="142" x2="250" y2="120" stroke="#a8201a" stroke-width="1.5" marker-end="url(#arrJv)"/>
+
+          <!-- 粗利 -->
+          <rect x="260" y="80" width="180" height="60" rx="3" fill="#1a1612" stroke="#1a1612" stroke-width="1.5"/>
+          <text x="350" y="103" text-anchor="middle" class="label-jp" font-size="11" fill="#f6f1e7" letter-spacing="2">GROSS PROFIT</text>
+          <text x="350" y="125" text-anchor="middle" class="label-jp" font-size="20" font-weight="600" fill="#f6f1e7">粗 利</text>
+
+          <!-- 粗利→外部報酬 -->
+          <line x1="440" y1="110" x2="490" y2="110" stroke="#1a1612" stroke-width="1.5" marker-end="url(#arrJv)"/>
+
+          <rect x="500" y="80" width="180" height="60" rx="3" fill="#6b3c4a" stroke="#4d2a36" stroke-width="1.5"/>
+          <text x="590" y="100" text-anchor="middle" class="label-jp" font-size="11" fill="#f6f1e7" letter-spacing="2">EXTERNAL × 20%</text>
+          <text x="590" y="124" text-anchor="middle" class="label-jp" font-size="16" font-weight="600" fill="#f6f1e7">外部報酬</text>
+
+          <!-- 外部パートナー -->
+          <line x1="590" y1="140" x2="590" y2="170" stroke="#6b3c4a" stroke-width="1.5" marker-end="url(#arrJv)"/>
+          <rect x="500" y="172" width="180" height="40" rx="3" fill="#fff" stroke="#6b3c4a" stroke-width="1.5"/>
+          <text x="590" y="197" text-anchor="middle" class="label-jp" font-size="13" font-weight="600" fill="#6b3c4a">→ 外部パートナーへ</text>
+
+          <!-- 粗利→純利益 -->
+          <line x1="350" y1="140" x2="350" y2="200" stroke="#1a1612" stroke-width="1.5"/>
+          <line x1="440" y1="200" x2="440" y2="200" stroke="#1a1612" stroke-width="1.5"/>
+          <text x="395" y="195" text-anchor="middle" font-size="10" fill="#7a6f60">残り80%</text>
+
+          <line x1="350" y1="200" x2="350" y2="230" stroke="#1a1612" stroke-width="1.5" marker-end="url(#arrJv)"/>
+
+          <!-- 純利益 -->
+          <rect x="240" y="232" width="220" height="60" rx="3" fill="#a8201a" stroke="#7a1612" stroke-width="1.5"/>
+          <text x="350" y="256" text-anchor="middle" class="label-jp" font-size="11" fill="#f6f1e7" letter-spacing="2">NET PROFIT (INTERNAL)</text>
+          <text x="350" y="278" text-anchor="middle" class="label-jp" font-size="20" font-weight="600" fill="#f6f1e7">純利益</text>
+
+          <!-- 分配 66:33:1 -->
+          <line x1="350" y1="292" x2="350" y2="320" stroke="#1a1612" stroke-width="1.5"/>
+          <line x1="120" y1="320" x2="700" y2="320" stroke="#1a1612" stroke-width="1.5"/>
+          <line x1="140" y1="320" x2="140" y2="345" stroke="#1a1612" stroke-width="1.5" marker-end="url(#arrJv)"/>
+          <line x1="400" y1="320" x2="400" y2="345" stroke="#1a1612" stroke-width="1.5" marker-end="url(#arrJv)"/>
+          <line x1="660" y1="320" x2="660" y2="345" stroke="#1a1612" stroke-width="1.5" marker-end="url(#arrJv)"/>
+
+          <rect x="60" y="350" width="160" height="76" rx="3" fill="#fff" stroke="#a8201a" stroke-width="1.5"/>
+          <text x="140" y="374" text-anchor="middle" class="label-jp" font-size="11" fill="#7a6f60">SHARE 1</text>
+          <text x="140" y="395" text-anchor="middle" font-size="22" font-weight="600" fill="#a8201a" font-family="JetBrains Mono">66%</text>
+          <text x="140" y="415" text-anchor="middle" font-size="10" fill="#7a6f60">純利益の 66%</text>
+
+          <rect x="320" y="350" width="160" height="76" rx="3" fill="#fff" stroke="#a8201a" stroke-width="1.5"/>
+          <text x="400" y="374" text-anchor="middle" class="label-jp" font-size="11" fill="#7a6f60">SHARE 2</text>
+          <text x="400" y="395" text-anchor="middle" font-size="22" font-weight="600" fill="#a8201a" font-family="JetBrains Mono">33%</text>
+          <text x="400" y="415" text-anchor="middle" font-size="10" fill="#7a6f60">純利益の 33%</text>
+
+          <rect x="580" y="350" width="160" height="76" rx="3" fill="#fff" stroke="#a8201a" stroke-width="1.5"/>
+          <text x="660" y="374" text-anchor="middle" class="label-jp" font-size="11" fill="#7a6f60">SHARE 3</text>
+          <text x="660" y="395" text-anchor="middle" font-size="22" font-weight="600" fill="#a8201a" font-family="JetBrains Mono">1%</text>
+          <text x="660" y="415" text-anchor="middle" font-size="10" fill="#7a6f60">純利益の 1%</text>
+
+          <text x="400" y="450" text-anchor="middle" font-size="11" fill="#7a6f60" letter-spacing="3">JV PROJECT ／ Internal Distribution 66 : 33 : 1</text>
+        </svg>
+      </div>
+
+      <div class="example">
+        <span class="example-label">CASE 07</span>
+        <div class="example-title">計算例 ― JV企画 ／ 売上 ¥20,000,000・経費 ¥5,000,000</div>
+
+        <h4 class="subsec" style="margin-top:6px">外部報酬の算定</h4>
+        <div class="calc-row"><span class="label">売上</span><span class="val">¥20,000,000</span></div>
+        <div class="calc-row"><span class="label">－ 経費</span><span class="val minus">▲ 5,000,000</span></div>
+        <div class="calc-row subtotal"><span class="label">粗利</span><span class="val">¥15,000,000</span></div>
+        <div class="calc-row"><span class="label">× 20%</span><span class="val">¥3,000,000</span></div>
+        <div class="calc-row total"><span class="label">外部報酬（外部パートナーへ支払）</span><span class="val">¥3,000,000</span></div>
+
+        <h4 class="subsec" style="margin-top:18px">純利益の算定</h4>
+        <div class="calc-row"><span class="label">売上</span><span class="val">¥20,000,000</span></div>
+        <div class="calc-row"><span class="label">－ 経費</span><span class="val minus">▲ 5,000,000</span></div>
+        <div class="calc-row"><span class="label">－ 外部報酬</span><span class="val minus">▲ 3,000,000</span></div>
+        <div class="calc-row total"><span class="label">純利益（社内分配原資）</span><span class="val">¥12,000,000</span></div>
+
+        <h4 class="subsec" style="margin-top:18px">レベニューシェア分配（66 : 33 : 1）</h4>
+        <div class="calc-row"><span class="label">第1配分先（66%）</span><span class="val">¥7,920,000</span></div>
+        <div class="calc-row"><span class="label">第2配分先（33%）</span><span class="val">¥3,960,000</span></div>
+        <div class="calc-row"><span class="label">第3配分先（1%）</span><span class="val">¥120,000</span></div>
+        <div class="calc-row subtotal"><span class="label">合計（100%）</span><span class="val">¥12,000,000</span></div>
+      </div>
+
+      <a href="#ch4" class="back-top">▲ TOP</a>
+    </div>
+
+  </section>
+
+  <!-- ═══════════ 第5章 ═══════════ -->
+  <section class="chapter" id="ch5">
+    <div class="chapter-header">
+      <div class="chapter-no">第 五 章</div>
+      <div class="chapter-title">計算の確定と支払</div>
+      <div class="chapter-en">Confirmation &amp; Payment</div>
+    </div>
+
+    <h3 class="section-title">第20条 ― 締め日と支払日</h3>
+    <p>全体の締め日および支払日は、原則として次のとおりとする。</p>
+
+    <table>
+      <thead><tr><th style="width:30%">区分</th><th>締め日</th><th>支払日</th></tr></thead>
+      <tbody>
+        <tr><td><b>原則</b></td><td>月末締め</td><td class="shu">翌月10日払い</td></tr>
+        <tr><td>一部案件</td><td>月末締め</td><td class="shu">翌月15日払い</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout indigo">
+      <div class="callout-label">案件別の支払日</div>
+      支払日が翌月10日／15日のいずれであるかは、案件ごとに事前に定める。案件責任者および対象メンバー（ホルダー）に明示する。
+    </div>
+
+    <h3 class="section-title">第21条 ― 算定スケジュール</h3>
+    <table>
+      <thead><tr><th style="width:14%">タイミング</th><th style="width:38%">作業</th><th>担当</th></tr></thead>
+      <tbody>
+        <tr><td class="code">月末</td><td>取引データ締切／カットオフ確認</td><td>各部署責任者</td></tr>
+        <tr><td class="code">+3営業日</td><td>案件別売上・経費の確定</td><td>経理</td></tr>
+        <tr><td class="code">+5営業日</td><td>各部署報酬・純利益分配の算定、関係者へ通知</td><td>経理</td></tr>
+        <tr><td class="code">+8営業日</td><td>異議申立期限（3営業日経過）</td><td>対象メンバー</td></tr>
+        <tr><td class="code">+9営業日</td><td>金額確定、未払金計上</td><td>経理</td></tr>
+        <tr><td class="code">翌月10日</td><td>銀行振込にて支給（原則）</td><td>経理</td></tr>
+        <tr><td class="code">翌月15日</td><td>銀行振込にて支給（一部案件）</td><td>経理</td></tr>
+      </tbody>
+    </table>
+
+    <!-- ═══ 支払遅延時のフロー ═══ -->
+    <h3 class="section-title">第22条 ― 支払遅延時の報告フロー</h3>
+
+    <div class="callout alert">
+      <div class="callout-label">徹底事項</div>
+      何らかの理由で支払いが遅れる際は、次のフローを<b>必ず</b>遵守すること。本フローはホルダー（対象メンバー全員）にも共有し、周知徹底すること。
+    </div>
+
+    <div class="escalation">
+      <span class="escalation-stamp">支払遅延 報告フロー</span>
+      <h4>遅延発生時の二段階報告</h4>
+
+      <div class="esc-step">
+        <div class="esc-num">1</div>
+        <div class="esc-text">
+          支払遅延の事象が発生した、または発生する見込みが判明した時点で、<b>必ず案件責任者へ報告する</b>。<br>
+          <span style="font-size:12px;color:var(--ink-faint)">※ 報告は口頭・テキストいずれでも可だが、後追いで記録（チャット履歴等）が残る形を推奨する。</span>
+        </div>
+      </div>
+
+      <div class="esc-step">
+        <div class="esc-num">2</div>
+        <div class="esc-text">
+          報告を受けた案件責任者は、<b>紀昭さん および 宮さん の両名へ必ず報告</b>する。<br>
+          <span style="font-size:12px;color:var(--ink-faint)">※ いずれか片方のみへの報告は不可。両名への報告をもって本フローの完了とする。</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="callout shu">
+      <div class="callout-label">ホルダーへの周知</div>
+      本フローは<b>ホルダー（対象メンバー）にも漏れなく共有</b>すること。各部署責任者は、新規メンバーのオンボーディング時にも本フローの説明を行うこと。
+    </div>
+
+    <h3 class="section-title">第23条 ― 異議申立と確定</h3>
+    <ol class="numbered">
+      <li>各部署の報酬および純利益分配の算定結果は、対象メンバーに開示し、<b>異議申立期間を3営業日</b>設ける。</li>
+      <li>異議がない場合、当月末日付で未払金として計上し、金額を確定する。</li>
+      <li>確定後の金額変更は、書面合意による契約改定時にのみ可能とする。</li>
+    </ol>
+
+    <div class="callout">
+      <div class="callout-label gold">変更管理の原則</div>
+      固定費・比率・分配構造の変更は、<b>原則として案件開始時または書面合意による契約改定時にのみ可能</b>とする。期中の遡及変更は認めない。
+    </div>
+  </section>
+
+  <!-- ═══════════ 付録 ═══════════ -->
+  <section class="chapter" id="appendix">
+    <div class="chapter-header">
+      <div class="chapter-no">付　　録</div>
+      <div class="chapter-title">確認事項リスト</div>
+      <div class="chapter-en">Items to Confirm</div>
+    </div>
+
+    <p class="lead">本マニュアル（Ver. 2.0）作成時点で、以下の項目について追加情報が必要です。確定情報をいただき次第、本文を改定いたします。</p>
+
+    <div class="appendix">
+      <h3>未確定事項</h3>
+      <ol>
+        <li><b>① 広告部署 ／ バックエンド・クロスセルの母数</b><br>
+        運用・製作者2%、統括・リーダー2%の<b>母数</b>（売上・粗利・調整後利益のいずれか）が未確定です。第14条の表中に注記済み。</li>
+
+        <li><b>② 広告部署 ／ 運用者の特例レベ報酬</b><br>
+        通常より高いレベ報酬が設定されている運用者がいる場合の、具体的な対象者および％を本マニュアルに登録するか、別表で管理するかを決定する必要があります。</li>
+
+        <li><b>③ 動画部署 ／ JV案件の報酬率</b><br>
+        現時点で「動画部署が絡んだJVは別途協議」とのことですので、案件ごとに％を確定させ、決定後は案件契約書に明記してください。</li>
+
+        <li><b>④ 動画部署 ／ 「イルカジュニア」案件の定義</b><br>
+        現状、名称のみ記載しています。明確な定義（対象案件の判定基準等）があれば追記いたします。</li>
+
+        <li><b>⑤ JV企画 ／ 66:33:1 の配分先の特定</b><br>
+        66%・33%・1%の各配分先（役職・個人など）を案件契約書に明記する運用とすることを推奨します。本マニュアル本文では「第1〜第3配分先」と表記しています。</li>
+
+        <li><b>⑥ JV企画 ／ 外部報酬20%の見直しタイミング</b><br>
+        現段階の標準値とのことですので、見直しの契機（例：四半期ごとの経営会議、新規パートナーとの契約時等）を定めることを推奨します。</li>
+      </ol>
+    </div>
+
+    <div class="signature">
+      <div class="sig-box">
+        <div class="role">DRAFTED BY</div>
+        <div class="line"></div>
+        <div class="name-label">起 案 ／ 経理部</div>
+      </div>
+      <div class="sig-box">
+        <div class="role">REVIEWED BY</div>
+        <div class="line"></div>
+        <div class="name-label">確 認 ／ 経理責任者</div>
+      </div>
+      <div class="sig-box">
+        <div class="role">APPROVED BY</div>
+        <div class="line"></div>
+        <div class="name-label">承 認 ／ 代表取締役</div>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <span class="ornament">◆</span> INTERNAL COMPENSATION MANUAL <span class="ornament">◆</span> Ver. 2.0 <span class="ornament">◆</span> 2026 <span class="ornament">◆</span>
+  </footer>
+
+</div>
+
+</body>
+</html>
