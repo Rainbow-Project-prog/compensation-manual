@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>報酬計算マニュアル｜社内用 Ver. 10.3</title>
+<title>報酬計算マニュアル｜社内用 Ver. 11.2</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho+B1:wght@400;500;600;700;800&family=Zen+Kaku+Gothic+New:wght@300;400;500;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -611,7 +611,7 @@
     <div class="cover-sub">― 部署別報酬規程 ／ 案件分類別純利益分配 ／ 確定支払フロー ―</div>
     <div class="cover-meta">
       <div><b>制定</b>2026.05</div>
-      <div><b>版数</b>Ver. 10.3</div>
+      <div><b>版数</b>Ver. 11.2</div>
       <div><b>区分</b>社内限</div>
     </div>
   </div>
@@ -674,6 +674,84 @@
         <tr><td>レベニューシェア</td><td>純利益を、事前に取り決めた配分率に基づいて関係者で分配する仕組み。</td></tr>
       </tbody>
     </table>
+
+    <h4 class="subsec">商品カテゴリーの定義</h4>
+    <p>報酬計算は、販売した商品が下記いずれのカテゴリーに該当するかによって分類される。<b>フロント商品とアップセル商品は、報酬計算上は別カテゴリーとして扱い、計算方法が異なる</b>。</p>
+    <table>
+      <thead><tr><th style="width:34%">カテゴリー</th><th>定義・該当商品</th></tr></thead>
+      <tbody>
+        <tr><td>フロント商品</td><td>標準的なフロントエンド商品（初回販売商品）。報酬計算上は<b>フロント商品としての計算方法</b>を適用する。</td></tr>
+        <tr><td>アップセル商品</td><td>フロント商品に付随して提案される追加・上位商品。報酬計算上は<b>アップセル商品としての計算方法</b>を適用し、フロント商品とは計算方法が異なる。</td></tr>
+        <tr><td>バックエンド商品</td><td>バックエンドに分類される商品（例：つくしルート9点 等）。</td></tr>
+        <tr><td>JV</td><td>複数の責任者が共同で出した企画。</td></tr>
+      </tbody>
+    </table>
+
+    <h3 class="section-title">分類のルール</h3>
+    <div class="callout indigo">
+      <div class="callout-label">報酬計算の分類ルール</div>
+      <ul style="margin:8px 0 0 22px">
+        <li><b>何を売ったか（どのプロダクトか）</b>によって、フロント計算かバックエンド計算かが決まる。</li>
+        <li><b>延長・継続案件</b>も、何が延長されたかによって分類が変わる。</li>
+        <li>延長・継続案件は件数が少ないため、<b>会計が都度、責任者に直接確認</b>する。</li>
+      </ul>
+    </div>
+
+    <p class="lead" style="margin-top:32px">以下、<b>全案件に共通する会計運用ルール</b>（会計ルールの統一・プロダクト別集計・経理オペレーション・共有体制）を定める。</p>
+
+<h3 class="section-title">第4条 ― 会計ルール・区分の統一</h3>
+
+    <div class="callout alert">
+      <div class="callout-label">ルールブック原則</div>
+      <ul style="margin:8px 0 0 22px">
+        <li>全案件に共通の会計ルール（<b>ルールブック</b>）を適用し、逸脱が生じた場合は<b>速やかに報告</b>する。</li>
+        <li><b>過去の運用者による独自運用は参照しない</b>。本ルールブックを正（唯一の基準）とする。</li>
+      </ul>
+    </div>
+
+    <h4 class="subsec">売上区分</h4>
+    <p>売上は、下記4区分で管理する。表示だけでなく、<b>計算もプロダクト別に分離</b>する。</p>
+    <table>
+      <thead><tr><th style="width:30%">区分</th><th>内容</th></tr></thead>
+      <tbody>
+        <tr><td>フロントエンド</td><td>通常のフロントエンド商品</td></tr>
+        <tr><td>アップセル</td><td>フロントエンドに付随するアップセル商品</td></tr>
+        <tr><td>バックエンド</td><td><b>つくしルート</b>、<b>キューテン（Qoo10）</b></td></tr>
+        <tr><td>JV</td><td>複数の責任者が共同で出した企画</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout indigo">
+      <div class="callout-label">プロダクト名に基づく区分分離</div>
+      会計区分は<b>プロダクト名に基づいて分離</b>する。<b>「つくし（つくしルート）」「Qoo10（キューテン）」はバックエンド</b>として扱い、そのカテゴリで報酬を計算する。<b>その他の商品はフロントエンド扱い</b>とする。
+    </div>
+
+    <h3 class="section-title">第5条 ― プロダクト別集計の開始</h3>
+    <div class="callout shu">
+      <div class="callout-label">5月よりプロダクト別集計を開始</div>
+      <b>5月分より、プロダクト別（フロント／アップ／バックエンド）で売上・経費の集計を開始</b>する。<br>
+      <b>4月分会計は、既存のルールブックを適用して精算可能</b>とする。
+    </div>
+
+    <h3 class="section-title">第6条 ― 経理オペレーション</h3>
+    <ul class="bullet">
+      <li>経理の主務は、各プロダクトの<b>「売上 − 経費」に基づく粗利計算</b>である。</li>
+      <li>バックエンドの売上・経費はこれまで十分に集計されていなかったが、<b>5月からプロダクト別集計を開始</b>する。</li>
+      <li>各部署が<b>バックエンドの売上と経費を明確に報告</b>し、経理が粗利計算を行う。</li>
+      <li>JVの経費については、<b>動画部署から上がったものを責任者が1〜2ヶ月確認</b>する運用とする。</li>
+      <li>経費提出は<b>案件別フォーム</b>で取得する。</li>
+      <li>通常プロダクトは、<b>プロダクトごとに報酬を計算</b>する。</li>
+    </ul>
+
+    <h3 class="section-title">第7条 ― 体制・コミュニケーション</h3>
+    <div class="callout indigo">
+      <div class="callout-label">報酬定義の共有体制</div>
+      <ul style="margin:8px 0 0 22px">
+        <li>報酬の<b>変更・定義は、チャットワークの報酬グループへ必ず記載</b>する。</li>
+        <li><b>経理・統括レイヤーが参加</b>して全体で共有する。</li>
+        <li>動画部署へのルール記載と周知を継続する。</li>
+      </ul>
+    </div>
   </section>
 
   <!-- ═══════════ 第2章 各部署の報酬計算規程 ═══════════ -->
@@ -696,7 +774,7 @@
 
       <p class="lead">CS部署の報酬は、<b>「基本固定費（月額）」</b>と<b>「インセンティブ（成約連動）」</b>の二階建て構成とする。</p>
 
-      <h3 class="section-title">第4条 ― 基本固定費</h3>
+      <h3 class="section-title">第8条 ― 基本固定費</h3>
       <table>
         <thead><tr><th style="width:38%">対象</th><th>月額固定費</th><th>備考</th></tr></thead>
         <tbody>
@@ -713,7 +791,7 @@
         <span class="fbox result">案件月額固定費</span>
       </div>
 
-      <h3 class="section-title">第5条 ― インセンティブ計算</h3>
+      <h3 class="section-title">第9条 ― インセンティブ計算</h3>
       <p>対象業務：<b>無言フォロー掘り起こし → 成約</b></p>
       <p>成約金額が100万円を超える場合、<b>100万円単位の整数部分</b>に1.5%を乗じた金額をチームインセンティブとする。100万円未満の端数は計算対象としない。</p>
 
@@ -843,7 +921,7 @@
 
       <p class="lead">営業部署の報酬は、<b>「マネジメントレイヤー報酬（案件売上の3％枠）」</b>と<b>「クローザー報酬（販売金額連動）」</b>の二系統で構成される。両者は独立して算定し、<b>同一人物が兼任する場合のみ合算</b>して支給する。</p>
 
-      <h3 class="section-title">第6条 ― マネジメントレイヤー報酬</h3>
+      <h3 class="section-title">第10条 ― マネジメントレイヤー報酬</h3>
       <p>案件売上に対する一定の%を、統括・マネージャー陣に分配する。<b>適用される%は案件のKPI（成約率）に応じて、以下4段階のいずれかを決定する</b>。</p>
 
       <h4 class="subsec">4段階のレベ%（KPI連動）</h4>
@@ -877,7 +955,7 @@
         </tbody>
       </table>
 
-      <h3 class="section-title">第7条 ― クローザー報酬</h3>
+      <h3 class="section-title">第11条 ― クローザー報酬</h3>
       <p>クローザーは、自身が決めた<b>販売金額</b>に対する一定比率を直接報酬として受け取る。マネジメントレイヤーの3%枠とは別系統で計算する。</p>
 
       <table>
@@ -1004,131 +1082,132 @@
         <div class="dept-en">VIDEO</div>
       </div>
 
-      <p class="lead">動画部署の報酬は、<b>YouTube経由でオプトしたリスト由来の売上およびYouTubeアドセンス売上から経費を控除した「粗利」</b>を分配原資とし、案件区分に応じた一定比率で算定する。</p>
+      <p class="lead">動画部署の報酬は、<b>JV企画またはバックエンド商品に対して、動画部署が動画マーケ（ティザー等）を仕掛けた場合</b>に発生する。動画部署リスト由来の売上から経費を控除した額に、商品区分別の比率を乗じて算定する。</p>
 
-      <h3 class="section-title">第8条 ― 計算項目の定義</h3>
-      <table>
-        <thead><tr><th style="width:30%">項目</th><th>定義</th></tr></thead>
-        <tbody>
-          <tr><td>売上（フロント＆アップ）</td><td><b>YouTube経由でオプトしたリスト</b>を起点に発生したフロント・アップの合計売上</td></tr>
-          <tr><td>アドセンス売上</td><td>YouTubeアドセンス指定口座への<b>着金金額</b>（純額ベース）</td></tr>
-          <tr><td>経費</td><td>当該動画案件に紐づく直接費および按分された共通費</td></tr>
-          <tr><td>粗利</td><td>上記より算出（次条参照）</td></tr>
-        </tbody>
-      </table>
+      <h3 class="section-title">第12条 ― 報酬の発生条件</h3>
 
-      <h3 class="section-title">第9条 ― 粗利および報酬の計算式</h3>
-
-      <div class="formula">
-        <span class="fbox">売上</span>
-        <span class="op">＋</span>
-        <span class="fbox">アドセンス売上</span>
-        <span class="op">−</span>
-        <span class="fbox">経費</span>
-        <span class="eq">＝</span>
-        <span class="fbox result">粗利</span>
+      <div class="callout shu">
+        <div class="callout-label">報酬の発生条件</div>
+        動画部署の報酬は、<b>JV企画、またはバックエンド商品に対して、動画部署が動画マーケ（ティザー等）を仕掛けた場合のみ</b>発生する。<br>
+        <b>動画マーケを行っていない場合は、報酬は発生しない。</b>
       </div>
 
-      <h4 class="subsec">案件区分別の報酬率</h4>
+      <div class="callout alert">
+        <div class="callout-label">偶発成約・非関与時の扱い</div>
+        <ul style="margin:8px 0 0 22px">
+          <li><b>偶発的に成約したケース</b>では、バックエンド分のレベニューは発生しない（動画マーケを能動的に仕掛けた場合のみ対象）。</li>
+          <li><b>動画部署が関与しない場合</b>、広告費は単純に経費として扱い、レベニューシェアは発生しない。</li>
+        </ul>
+      </div>
+
+      <p style="font-size:15px;color:var(--ink-faint)">※ 商品区分（フロント・アップセル／バックエンド／JV）の定義、および報酬計算の分類ルールは<b>第3条（用語の定義・分類のルール）</b>を参照。</p>
+
+      <h3 class="section-title">第13条 ― 報酬の計算式と経費の提出</h3>
+
+      <h4 class="subsec">報酬の計算式</h4>
+      <p>商品区分に応じて、動画部署リストの売上から経費を控除した額に、下記の比率を乗じる。</p>
       <table>
-        <thead><tr><th style="width:40%">案件区分</th><th>動画部署報酬</th><th>備考</th></tr></thead>
+        <thead><tr><th style="width:40%">商品区分</th><th>動画部署報酬</th></tr></thead>
         <tbody>
-          <tr><td>通常案件</td><td class="num shu">粗利 × 10%</td><td>原則ルール</td></tr>
-          <tr><td>イルカジュニア案件</td><td class="num shu">粗利 × 14%</td><td>特例</td></tr>
-          <tr><td>JV案件</td><td class="num">別途協議</td><td>動画部署が絡む場合に発生（％は案件ごと）</td></tr>
+          <tr><td>フロント商品</td><td class="num shu">（売上 − 経費）× 10%</td></tr>
+          <tr><td>アップセル商品</td><td class="num shu">（売上 − 経費）× 10%</td></tr>
+          <tr><td>バックエンド・JV</td><td class="num shu">（売上 − 経費）× 2%</td></tr>
         </tbody>
       </table>
+      <p style="font-size:14px;color:var(--ink-faint)">※ <b>アップセル商品はフロント商品と同じ料率（10%）</b>で計算する。</p>
 
       <div class="formula">
-        <span class="fbox">粗利</span>
+        <span class="fbox">（動画部署リストの売上 − 経費）</span>
         <span class="op">×</span>
-        <span class="fbox">案件区分別％</span>
+        <span class="fbox">区分別％</span>
         <span class="eq">＝</span>
         <span class="fbox result">動画部署報酬</span>
       </div>
 
       <div class="diagram-wrap">
         <div class="diagram-title">図 3 ／ 動画部署 報酬計算フロー</div>
-        <div class="diagram-caption">売上＋アドセンスから経費を控除した粗利に、案件区分別の比率を乗じる。</div>
-        <svg class="diagram-svg svg-flow" viewBox="0 0 540 700" xmlns="http://www.w3.org/2000/svg">
+        <div class="diagram-caption">動画マーケを仕掛けた案件のみ対象。フロント・アップセルは10%、バックエンド・JVは2%を乗じる。</div>
+        <svg class="diagram-svg svg-flow" viewBox="0 0 540 620" xmlns="http://www.w3.org/2000/svg">
           <defs>
             <marker id="arrVid" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse">
               <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a1612"/>
             </marker>
           </defs>
 
-          <!-- 売上 -->
-          <rect x="60" y="20" width="190" height="60" rx="4" fill="#fff" stroke="#4a5a3a" stroke-width="2"/>
-          <text x="155" y="44" text-anchor="middle" font-size="13" fill="#7a6f60">REVENUE</text>
-          <text x="155" y="68" text-anchor="middle" class="label-jp" font-size="18" font-weight="600">売上(F＋アップ)</text>
+          <rect x="130" y="20" width="280" height="64" rx="4" fill="#fff" stroke="#4a5a3a" stroke-width="2"/>
+          <text x="270" y="46" text-anchor="middle" font-size="12" fill="#7a6f60" letter-spacing="2">REVENUE</text>
+          <text x="270" y="70" text-anchor="middle" class="label-jp" font-size="18" font-weight="600">動画部署リストの売上</text>
 
-          <!-- アドセンス -->
-          <rect x="290" y="20" width="190" height="60" rx="4" fill="#fff" stroke="#4a5a3a" stroke-width="2"/>
-          <text x="385" y="44" text-anchor="middle" font-size="13" fill="#7a6f60">ADSENSE</text>
-          <text x="385" y="68" text-anchor="middle" class="label-jp" font-size="18" font-weight="600">アドセンス売上</text>
+          <line x1="270" y1="84" x2="270" y2="112" stroke="#1a1612" stroke-width="2" marker-end="url(#arrVid)"/>
 
-          <line x1="155" y1="80" x2="240" y2="115" stroke="#1a1612" stroke-width="2"/>
-          <line x1="385" y1="80" x2="300" y2="115" stroke="#1a1612" stroke-width="2"/>
+          <rect x="160" y="117" width="220" height="54" rx="4" fill="#fff" stroke="#4a5a3a" stroke-width="2" stroke-dasharray="4 3"/>
+          <text x="270" y="150" text-anchor="middle" class="label-jp" font-size="18" font-weight="600" fill="#4a5a3a">− 経費</text>
 
-          <circle cx="270" cy="125" r="22" fill="#1a1612"/>
-          <text x="270" y="134" text-anchor="middle" font-size="22" font-weight="600" fill="#f6f1e7">＋</text>
+          <line x1="270" y1="171" x2="270" y2="199" stroke="#1a1612" stroke-width="2" marker-end="url(#arrVid)"/>
 
-          <line x1="270" y1="147" x2="270" y2="178" stroke="#1a1612" stroke-width="2" marker-end="url(#arrVid)"/>
+          <rect x="120" y="204" width="300" height="74" rx="4" fill="#4a5a3a" stroke="#2f3a25" stroke-width="2"/>
+          <text x="270" y="232" text-anchor="middle" font-size="12" fill="#f6f1e7" letter-spacing="2">PROFIT</text>
+          <text x="270" y="260" text-anchor="middle" class="label-jp" font-size="22" font-weight="600" fill="#f6f1e7">利益（売上−経費）</text>
 
-          <!-- 合計売上 -->
-          <rect x="160" y="183" width="220" height="56" rx="4" fill="#fff" stroke="#1a1612" stroke-width="2"/>
-          <text x="270" y="218" text-anchor="middle" class="label-jp" font-size="20" font-weight="600">合計売上</text>
+          <line x1="270" y1="278" x2="270" y2="318" stroke="#1a1612" stroke-width="2.5"/>
+          <line x1="150" y1="318" x2="390" y2="318" stroke="#1a1612" stroke-width="2.5"/>
+          <line x1="150" y1="318" x2="150" y2="346" stroke="#1a1612" stroke-width="2" marker-end="url(#arrVid)"/>
+          <line x1="390" y1="318" x2="390" y2="346" stroke="#1a1612" stroke-width="2" marker-end="url(#arrVid)"/>
 
-          <line x1="270" y1="239" x2="270" y2="265" stroke="#1a1612" stroke-width="2" marker-end="url(#arrVid)"/>
+          <text x="270" y="308" text-anchor="middle" font-size="13" fill="#7a6f60" letter-spacing="1">商品区分で分岐</text>
 
-          <!-- − 経費 -->
-          <rect x="160" y="270" width="220" height="56" rx="4" fill="#fff" stroke="#a8201a" stroke-width="2" stroke-dasharray="4 3"/>
-          <text x="270" y="305" text-anchor="middle" class="label-jp" font-size="20" font-weight="600" fill="#a8201a">− 経費</text>
+          <rect x="30" y="351" width="240" height="100" rx="4" fill="#fff" stroke="#4a5a3a" stroke-width="2"/>
+          <text x="150" y="375" text-anchor="middle" font-size="12" fill="#7a6f60" letter-spacing="2">FRONT / UPSELL</text>
+          <text x="150" y="400" text-anchor="middle" class="label-jp" font-size="15" font-weight="600">フロント・アップセル</text>
+          <text x="150" y="436" text-anchor="middle" font-size="30" font-weight="700" fill="#4a5a3a" font-family="JetBrains Mono">× 10%</text>
 
-          <line x1="270" y1="326" x2="270" y2="355" stroke="#1a1612" stroke-width="2" marker-end="url(#arrVid)"/>
+          <rect x="290" y="351" width="240" height="100" rx="4" fill="#fff" stroke="#4a5a3a" stroke-width="2"/>
+          <text x="410" y="377" text-anchor="middle" font-size="12" fill="#7a6f60" letter-spacing="2">BACKEND / JV</text>
+          <text x="410" y="402" text-anchor="middle" class="label-jp" font-size="16" font-weight="600">バックエンド・JV</text>
+          <text x="410" y="436" text-anchor="middle" font-size="30" font-weight="700" fill="#4a5a3a" font-family="JetBrains Mono">× 2%</text>
 
-          <!-- 粗利 -->
-          <rect x="120" y="362" width="300" height="80" rx="4" fill="#4a5a3a" stroke="#3a4730" stroke-width="2"/>
-          <text x="270" y="390" text-anchor="middle" font-size="14" fill="#f6f1e7" letter-spacing="2">GROSS PROFIT</text>
-          <text x="270" y="420" text-anchor="middle" class="label-jp" font-size="28" font-weight="600" fill="#f6f1e7">粗 利</text>
+          <line x1="150" y1="451" x2="150" y2="490" stroke="#1a1612" stroke-width="2"/>
+          <line x1="410" y1="451" x2="410" y2="490" stroke="#1a1612" stroke-width="2"/>
+          <line x1="150" y1="490" x2="410" y2="490" stroke="#1a1612" stroke-width="2"/>
+          <line x1="270" y1="490" x2="270" y2="518" stroke="#1a1612" stroke-width="2" marker-end="url(#arrVid)"/>
 
-          <line x1="270" y1="442" x2="270" y2="470" stroke="#1a1612" stroke-width="2" marker-end="url(#arrVid)"/>
-
-          <!-- ％適用ノード -->
-          <rect x="60" y="475" width="420" height="100" rx="4" fill="#fff" stroke="#a8201a" stroke-width="2"/>
-          <text x="270" y="500" text-anchor="middle" font-size="14" fill="#7a6f60">案件区分別 ％</text>
-          <text x="150" y="525" text-anchor="middle" font-size="14" fill="#7a6f60">通常</text>
-          <text x="150" y="550" text-anchor="middle" font-size="18" font-weight="600" fill="#a8201a" font-family="JetBrains Mono">× 10%</text>
-          <line x1="220" y1="510" x2="220" y2="565" stroke="#d4c8af"/>
-          <text x="270" y="525" text-anchor="middle" font-size="14" fill="#7a6f60">イルカJr</text>
-          <text x="270" y="550" text-anchor="middle" font-size="18" font-weight="600" fill="#a8201a" font-family="JetBrains Mono">× 14%</text>
-          <line x1="320" y1="510" x2="320" y2="565" stroke="#d4c8af"/>
-          <text x="395" y="525" text-anchor="middle" font-size="14" fill="#7a6f60">JV</text>
-          <text x="395" y="550" text-anchor="middle" font-size="14" fill="#a8201a">別途</text>
-
-          <line x1="270" y1="575" x2="270" y2="605" stroke="#1a1612" stroke-width="2" marker-end="url(#arrVid)"/>
-
-          <rect x="80" y="610" width="380" height="70" rx="4" fill="#4a5a3a" stroke="#3a4730" stroke-width="2"/>
-          <text x="270" y="654" text-anchor="middle" class="label-jp" font-size="22" font-weight="600" fill="#f6f1e7">動画部署 報酬</text>
+          <rect x="130" y="523" width="280" height="70" rx="4" fill="#4a5a3a" stroke="#2f3a25" stroke-width="2"/>
+          <text x="270" y="551" text-anchor="middle" font-size="12" fill="#f6f1e7" letter-spacing="2">PAYOUT</text>
+          <text x="270" y="578" text-anchor="middle" class="label-jp" font-size="22" font-weight="600" fill="#f6f1e7">動画部署 報酬</text>
         </svg>
       </div>
 
       <div class="example">
-        <span class="example-label">CASE 03</span>
-        <div class="example-title">計算例 ― 通常案件 ／ 売上 ¥5,000,000＋アドセンス ¥800,000／経費 ¥1,800,000</div>
-
-        <div class="calc-row"><span class="label">売上（F＋アップ）</span><span class="val">¥5,000,000</span></div>
-        <div class="calc-row"><span class="label">＋ アドセンス売上</span><span class="val">¥800,000</span></div>
+        <span class="example-label">CASE 03-A</span>
+        <div class="example-title">計算例 ― フロント商品 ／ 売上 ¥5,000,000・経費 ¥1,800,000</div>
+        <div class="calc-row"><span class="label">動画部署リストの売上</span><span class="val">¥5,000,000</span></div>
         <div class="calc-row"><span class="label">－ 経費</span><span class="val minus">▲ 1,800,000</span></div>
-        <div class="calc-row total"><span class="label">粗利</span><span class="val">¥4,000,000</span></div>
+        <div class="calc-row total"><span class="label">利益（売上 − 経費）</span><span class="val">¥3,200,000</span></div>
+        <h4 class="subsec" style="margin-top:18px">報酬計算（フロント 10%）</h4>
+        <div class="calc-row"><span class="label">¥3,200,000 × 10%</span><span class="val">¥320,000</span></div>
+        <div class="calc-row total"><span class="label">動画部署 報酬</span><span class="val">¥320,000</span></div>
+      </div>
 
-        <h4 class="subsec" style="margin-top:18px">報酬計算（通常案件 10%）</h4>
-        <div class="calc-row"><span class="label">¥4,000,000 × 10%</span><span class="val">¥400,000</span></div>
-        <div class="calc-row total"><span class="label">動画部署 報酬</span><span class="val">¥400,000</span></div>
+      <div class="example">
+        <span class="example-label">CASE 03-B</span>
+        <div class="example-title">計算例 ― バックエンド商品（つくしルート） ／ 売上 ¥3,000,000・経費 ¥1,000,000</div>
+        <div class="calc-row"><span class="label">動画部署リストの売上</span><span class="val">¥3,000,000</span></div>
+        <div class="calc-row"><span class="label">－ 経費</span><span class="val minus">▲ 1,000,000</span></div>
+        <div class="calc-row total"><span class="label">利益（売上 − 経費）</span><span class="val">¥2,000,000</span></div>
+        <h4 class="subsec" style="margin-top:18px">報酬計算（バックエンド・JV 2%）</h4>
+        <div class="calc-row"><span class="label">¥2,000,000 × 2%</span><span class="val">¥40,000</span></div>
+        <div class="calc-row total"><span class="label">動画部署 報酬</span><span class="val">¥40,000</span></div>
+      </div>
 
-        <div class="calc-note">
-          ※ 同じ粗利でイルカジュニア案件の場合：¥4,000,000 × 14% ＝ ¥560,000
-        </div>
+      <h4 class="subsec">経費の提出方法</h4>
+      <div class="callout indigo">
+        <div class="callout-label">経費はプロダクトごとに分けて提出</div>
+        経費は<b>プロダクトごとに分けて提出</b>すること。具体的には、下記のかたちで提出する。
+        <ul style="margin:12px 0 12px 22px">
+          <li>「つくしルートの動画マーケにかかった経費：〇〇円」</li>
+          <li>「Qoo10の動画マーケにかかった経費：〇〇円」</li>
+        </ul>
+        経費提出フォームの<b>プロダクト選択</b>から、該当するものを選んで提出すること。
       </div>
 
       <a href="#ch2" class="back-top">▲ TOP</a>
@@ -1144,7 +1223,7 @@
 
       <p class="lead">広告部署の報酬は、<b>「統括枠」</b>と<b>「運用者・製作者枠」</b>の二系統で構成し、それぞれ独立して算定する。物販を含むバックエンド・クロスセル案件は別レートを適用する。</p>
 
-      <h3 class="section-title">第10条 ― 統括（第一統括・第二統括・リーダー）報酬</h3>
+      <h3 class="section-title">第14条 ― 統括（第一統括・第二統括・リーダー）報酬</h3>
       <p>広告経由売上から、広告費および諸経費を控除した残額に5%を乗じた金額を、<b>第一統括・第二統括・リーダー</b>の3者で分配する。</p>
 
       <div class="formula">
@@ -1164,7 +1243,7 @@
 
       <p>統括枠合計を、第一統括・第二統括・リーダーの3者で分配する（具体的な分配比率は別途定める）。</p>
 
-      <h3 class="section-title">第11条 ― 運用者・製作者報酬</h3>
+      <h3 class="section-title">第15条 ― 運用者・製作者報酬</h3>
 
       <h4 class="subsec">通常パターン</h4>
       <p>原則として、フロント・アップそれぞれ別レートで算定し、合算する。</p>
@@ -1217,7 +1296,7 @@
         運用者によっては、契約により<b>通常より高いレベ報酬</b>が設定されている場合がある。該当者の有無は<b>案件契約時に確認</b>し、本マニュアルの計算結果と整合させること。
       </div>
 
-      <h3 class="section-title">第12条 ― バックエンド・クロスセル案件（物販を含む）</h3>
+      <h3 class="section-title">第16条 ― バックエンド・クロスセル案件（物販を含む）</h3>
       <p>物販を含むバックエンド・クロスセル案件については、別途次の比率を適用する。</p>
 
       <table>
@@ -1293,7 +1372,7 @@
           <rect x="80" y="715" width="380" height="70" rx="4" fill="#a8201a" stroke="#7a1612" stroke-width="2"/>
           <text x="270" y="760" text-anchor="middle" class="label-jp" font-size="22" font-weight="600" fill="#f6f1e7">広告部署メンバーへの支給</text>
 
-          <text x="270" y="820" text-anchor="middle" font-size="13" fill="#7a6f60" letter-spacing="2">バックエンド・クロスセル案件は別途 第12条を適用</text>
+          <text x="270" y="820" text-anchor="middle" font-size="13" fill="#7a6f60" letter-spacing="2">バックエンド・クロスセル案件は別途 第16条を適用</text>
         </svg>
       </div>
 
@@ -1334,8 +1413,8 @@
         <div class="calc-row"><span class="label">製作者(30%)</span><span class="val">¥18,000</span></div>
       </div>
 
-      <h3 class="section-title">第13条 ― 月額固定費および動画広告台本制作報酬</h3>
-      <p>前記の役割別報酬（第10条〜第12条）とは別途、広告部署には次の<b>固定報酬</b>および<b>出来高報酬</b>を支給する。</p>
+      <h3 class="section-title">第17条 ― 月額固定費および動画広告台本制作報酬</h3>
+      <p>前記の役割別報酬（第14条〜第16条）とは別途、広告部署には次の<b>固定報酬</b>および<b>出来高報酬</b>を支給する。</p>
 
       <h4 class="subsec">① 広告部署 月額固定費</h4>
       <p>広告部署全体に対し、毎月固定で<b>¥100,000</b>を支給する。部内での分配方法は別途定める。</p>
@@ -1383,7 +1462,7 @@
 
       <p class="lead">サポート部署の報酬は、<b>個別契約に基づく月額固定給</b>とする。インセンティブや変動要素は設けず、案件売上・成果に連動しない。</p>
 
-      <h3 class="section-title">第14条 ― 月額固定給</h3>
+      <h3 class="section-title">第18条 ― 月額固定給</h3>
       <p>サポート部署メンバーへの支給額は、<b>月額¥50,000 〜 ¥150,000の範囲</b>で個別に設定する。具体的な金額は人によって異なり、各メンバーとの個別契約により決定する。</p>
 
       <table>
@@ -1483,7 +1562,7 @@
 
       <p class="lead">インスタ部署の報酬は、<b>売上から経費を控除した「利益合計」</b>を、案件・インスタ部署の2者で分配する。フロント・アップセル共通の比率を適用する。</p>
 
-      <h3 class="section-title">第15条 ― 経費の範囲および利益分配</h3>
+      <h3 class="section-title">第19条 ― 経費の範囲および利益分配</h3>
 
       <h4 class="subsec">経費の範囲</h4>
       <p>本部署の利益計算において、売上から差し引く経費は次の4項目とする。</p>
@@ -1612,7 +1691,7 @@
 
       <p class="lead">サブマーケの報酬は、<b>「基本時給」</b>と<b>「サブマーケ統括報酬」</b>の二系統で構成する。マーケPの研修費・研修終了後報酬については別途定めるが、<b>現時点では運用されていない</b>。</p>
 
-      <h3 class="section-title">第16条 ― 報酬の基本構成</h3>
+      <h3 class="section-title">第20条 ― 報酬の基本構成</h3>
 
       <h4 class="subsec">① 基本時給</h4>
       <p>サブマーケのメンバーには、<b>時給 ¥1,500</b>を支給する。本時給は<b>案件経費</b>として計上する。</p>
@@ -1627,7 +1706,7 @@
 
       <div class="callout indigo">
         <div class="callout-label">現状の運用</div>
-        後述の第17条で定める研修費・研修終了後報酬の制度が現時点で運用されていないため、<b>サブマーケへの実際の支給は本①の時給制（¥1,500／時）のみ</b>で行われている。
+        後述の第21条で定める研修費・研修終了後報酬の制度が現時点で運用されていないため、<b>サブマーケへの実際の支給は本①の時給制（¥1,500／時）のみ</b>で行われている。
       </div>
 
       <h4 class="subsec">② サブマーケ統括報酬</h4>
@@ -1709,11 +1788,11 @@
         <div class="calc-row total"><span class="label">サブマーケ統括報酬</span><span class="val">¥140,000</span></div>
       </div>
 
-      <h3 class="section-title">第17条 ― マーケPの研修費および研修終了後の報酬</h3>
+      <h3 class="section-title">第21条 ― マーケPの研修費および研修終了後の報酬</h3>
 
       <div class="callout alert">
         <div class="callout-label">現在 運用なし</div>
-        本条で定める制度は、<b>現時点では運用されていない</b>。本条は制度設計の参考として記載する。実際のサブマーケへの支給は、<b>第16条① の時給制（¥1,500／時）のみ</b>で行う。
+        本条で定める制度は、<b>現時点では運用されていない</b>。本条は制度設計の参考として記載する。実際のサブマーケへの支給は、<b>第20条① の時給制（¥1,500／時）のみ</b>で行う。
       </div>
 
       <h4 class="subsec">(a) 研修期間（3ヶ月間）</h4>
@@ -1762,7 +1841,7 @@
 
       <p class="lead">エバーグリーン案件は、当社が運用する継続案件である。<b>売上から経費を控除した純利益</b>を、レベニューシェアメンバーに事前合意した配分率で分配する。外部協業先が参加する案件では、外部協業先も<b>純利益からの分配対象</b>となる（外部報酬を売上から先に引くわけではない）。</p>
 
-      <h3 class="section-title">第18条 ― 純利益の算定</h3>
+      <h3 class="section-title">第22条 ― 純利益の算定</h3>
       <p>純利益は、外部協業先の参加有無に関わらず、次の式で算定する。</p>
       <div class="formula">
         <span class="fbox">売上</span>
@@ -1777,7 +1856,7 @@
         外部協業先（システム提供等）への報酬は、<b>売上から先に控除しない</b>。算定した純利益に対して、外部協業先を含むレベニューシェアメンバー間で配分する形を取る（外部協業先がある案件のみ）。
       </div>
 
-      <h3 class="section-title">第19条 ― レベニューシェア分配</h3>
+      <h3 class="section-title">第23条 ― レベニューシェア分配</h3>
       <p>純利益に対し、案件ごとに事前合意した配分率を乗じて、各メンバーへの分配額を算定する。<b>外部協業先が参加する案件では、外部協業先もメンバーの一員として配分を受ける</b>。</p>
 
       <div class="formula">
@@ -1898,7 +1977,7 @@
 
       <p class="lead">JV企画は<b>2名のホルダーが絡んで成立する</b>協業案件である。報酬は、案件における<b>3つの役割（集客／販売／サポート）の分担</b>に応じて、純利益から各役割33%ずつを配分する。</p>
 
-      <h3 class="section-title">第20条 ― JV企画の構成</h3>
+      <h3 class="section-title">第24条 ― JV企画の構成</h3>
 
       <div class="callout indigo">
         <div class="callout-label">外部協業先の扱い</div>
@@ -1915,8 +1994,13 @@
         </tbody>
       </table>
 
-      <h3 class="section-title">第21条 ― 純利益の算定</h3>
+      <h3 class="section-title">第25条 ― 純利益の算定</h3>
       <p>JV案件の純利益は、次の式で算定する。<b>外部協業先が参加する場合は、外部報酬を売上から控除</b>する（エバーグリーン案件と異なり、JVでは外部報酬を先に引く扱いとする）。</p>
+
+      <div class="callout indigo">
+        <div class="callout-label">計算前提 ／ クローザー報酬の扱い</div>
+        JV案件は<b>現状の計算方法を基礎</b>として分配する。<b>クローザー報酬は経費として計上</b>し、純利益の算定前に控除する。
+      </div>
 
       <div class="formula">
         <span class="fbox">売上</span>
@@ -1939,7 +2023,7 @@
         外部協業先（システム提供等）が参加する案件では、案件ごとに協議の上で<b>外部報酬の金額・割合を決定</b>し、売上から控除する。参加しない案件では、本控除は発生しない（上記式の「外部報酬(任意)」は ¥0 となる）。
       </div>
 
-      <h3 class="section-title">第22条 ― 役割別分配（集客 ／ 販売 ／ サポート 各33% ＋ 残り1%）</h3>
+      <h3 class="section-title">第26条 ― 役割別分配（集客 ／ 販売 ／ サポート 各33% ＋ 残り1%）</h3>
       <p>純利益は、3つの役割に各33%ずつ配分し、その役割を担当したホルダーへ支給する。<b>合計99%の残り1%は、大舘さんが絡む場合は大舘さんへ、絡まない場合はホルダー間で2:1の比率で配分する</b>。</p>
 
       <table>
@@ -2122,7 +2206,7 @@
       <div class="chapter-en">Confirmation &amp; Payment</div>
     </div>
 
-    <h3 class="section-title">第23条 ― 締め日と支払日</h3>
+    <h3 class="section-title">第27条 ― 締め日と支払日</h3>
     <p>全体の締め日および支払日は、原則として次のとおりとする。</p>
 
     <table>
@@ -2138,7 +2222,7 @@
       支払日が翌月10日／15日のいずれであるかは、<b>案件ごとに事前に定める</b>。案件責任者および対象メンバー（ホルダー）に明示する。
     </div>
 
-    <h3 class="section-title">第24条 ― 算定スケジュール</h3>
+    <h3 class="section-title">第28条 ― 算定スケジュール</h3>
     <table>
       <thead><tr><th style="width:14%">タイミング</th><th style="width:38%">作業</th><th>担当</th></tr></thead>
       <tbody>
@@ -2152,7 +2236,7 @@
       </tbody>
     </table>
 
-    <h3 class="section-title">第25条 ― 支払遅延時の報告フロー</h3>
+    <h3 class="section-title">第29条 ― 支払遅延時の報告フロー</h3>
 
     <div class="callout alert">
       <div class="callout-label">徹底事項</div>
@@ -2205,8 +2289,9 @@
     </div>
   </section>
 
+
   <footer>
-    <span class="ornament">◆</span> INTERNAL COMPENSATION MANUAL <span class="ornament">◆</span> Ver. 10.3 <span class="ornament">◆</span> 2026 <span class="ornament">◆</span>
+    <span class="ornament">◆</span> INTERNAL COMPENSATION MANUAL <span class="ornament">◆</span> Ver. 11.2 <span class="ornament">◆</span> 2026 <span class="ornament">◆</span>
   </footer>
 
 </div>
