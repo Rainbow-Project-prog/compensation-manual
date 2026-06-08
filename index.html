@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>報酬計算マニュアル｜社内用 Ver. 11.4</title>
+<title>報酬計算マニュアル｜社内用 Ver. 11.5</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho+B1:wght@400;500;600;700;800&family=Zen+Kaku+Gothic+New:wght@300;400;500;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -606,12 +606,13 @@
 
   <!-- ───────── 表紙 ───────── -->
   <div class="cover">
-    <div class="cover-eyebrow">Internal Compensation Manual / Revision 10.3</div>
+    <div class="cover-eyebrow">Internal Compensation Manual / Revision 11.5</div>
     <h1>報酬計算<span class="accent">マニュアル</span></h1>
     <div class="cover-sub">― 部署別報酬規程 ／ 案件分類別純利益分配 ／ 確定支払フロー ―</div>
     <div class="cover-meta">
       <div><b>制定</b>2026.05</div>
-      <div><b>版数</b>Ver. 11.4</div>
+      <div><b>改定</b>2026.06.08</div>
+      <div><b>版数</b>Ver. 11.5</div>
       <div><b>区分</b>社内限</div>
     </div>
   </div>
@@ -778,140 +779,55 @@
         <div class="dept-en">CUSTOMER SUCCESS</div>
       </div>
 
-      <p class="lead">CS部署の報酬は、<b>「基本固定費（月額）」</b>と<b>「インセンティブ（成約連動）」</b>の二階建て構成とする。</p>
+      <p class="lead">CS部署の報酬は、<b>1案件あたりの内訳経費（固定額）</b>として、メンバー別に定めた金額を支払う構成とする。<b>標準（第8条）</b>と<b>フィアナ案件の特例（第9条）</b>の2系統からなる。</p>
 
-      <h3 class="section-title">第8条 ― 基本固定費</h3>
+      <h3 class="section-title">第8条 ― CS報酬（標準）</h3>
+      <p>1案件あたりの内訳経費は、下表のとおりとする。</p>
       <table>
-        <thead><tr><th style="width:38%">対象</th><th>月額固定費</th><th>備考</th></tr></thead>
+        <thead><tr><th style="width:36%">項目</th><th style="width:22%">金額</th><th>備考</th></tr></thead>
         <tbody>
-          <tr><td>統括 ＋ 第二統括（合計）</td><td class="num shu">¥80,000</td><td>2名で1セット扱い</td></tr>
-          <tr><td>ワーカー（1名あたり）</td><td class="num shu">¥20,000</td><td>人数に応じて加算</td></tr>
+          <tr><td>町田さん</td><td class="num shu">¥30,000</td><td>―</td></tr>
+          <tr><td>お米ちゃん</td><td class="num shu">¥20,000</td><td>―</td></tr>
+          <tr><td>ワーカー</td><td class="num shu">¥60,000</td><td>1人あたり ¥30,000 × 2名（基本的に1案件2名体制）</td></tr>
+          <tr><td>内部留保</td><td class="num shu">¥10,000</td><td>―</td></tr>
+          <tr><td><b>合計</b></td><td class="num shu"><b>¥120,000</b></td><td>1案件あたり</td></tr>
         </tbody>
       </table>
 
       <div class="formula">
-        <span class="fbox">¥80,000</span>
-        <span class="op">＋</span>
-        <span class="fbox">ワーカー人数 × ¥20,000</span>
-        <span class="eq">＝</span>
-        <span class="fbox result">案件月額固定費</span>
-      </div>
-
-      <h3 class="section-title">第9条 ― インセンティブ計算</h3>
-      <p>対象業務：<b>無言フォロー掘り起こし → 成約</b></p>
-      <p>成約金額が100万円を超える場合、<b>100万円単位の整数部分</b>に1.5%を乗じた金額をチームインセンティブとする。100万円未満の端数は計算対象としない。</p>
-
-      <div class="formula">
-        <span class="fbox">⌊成約金額 ÷ 1,000,000⌋</span>
+        <span class="fbox">¥30,000</span>
         <span class="op">×</span>
-        <span class="fbox">1,000,000</span>
-        <span class="op">×</span>
-        <span class="fbox">1.5%</span>
+        <span class="fbox">2名</span>
         <span class="eq">＝</span>
-        <span class="fbox result">チームインセンティブ</span>
+        <span class="fbox result">¥60,000</span>
       </div>
-      <p style="font-size:13px;color:var(--ink-faint);text-align:center;margin-top:-8px">※ ⌊x⌋ は x の整数部分（切り捨て）を表す</p>
+      <div class="diagram-caption">ワーカー単価 × 人数 ＝ ワーカー小計</div>
 
-      <h4 class="subsec">階段式テーブル</h4>
+      <h3 class="section-title">第9条 ― CS報酬（フィアナ案件の特例）</h3>
+      <p>フィアナ案件に限り、1案件あたりの内訳経費は下表のとおりとする。</p>
       <table>
-        <thead><tr><th>成約金額の範囲</th><th>計算対象金額</th><th>チームインセンティブ</th></tr></thead>
+        <thead><tr><th style="width:36%">項目</th><th style="width:22%">金額</th><th>備考</th></tr></thead>
         <tbody>
-          <tr><td>0 〜 999,999円</td><td class="num">¥0</td><td class="num">¥0</td></tr>
-          <tr><td>1,000,000 〜 1,999,999円</td><td class="num">¥1,000,000</td><td class="num shu">¥15,000</td></tr>
-          <tr><td>2,000,000 〜 2,999,999円</td><td class="num">¥2,000,000</td><td class="num shu">¥30,000</td></tr>
-          <tr><td>3,000,000 〜 3,999,999円</td><td class="num">¥3,000,000</td><td class="num shu">¥45,000</td></tr>
-          <tr><td>4,000,000 〜 4,999,999円</td><td class="num">¥4,000,000</td><td class="num shu">¥60,000</td></tr>
-          <tr><td>5,000,000円以上</td><td class="num">⌊金額/100万⌋×100万</td><td class="num shu">同 × 1.5%</td></tr>
+          <tr><td>町田さん</td><td class="num shu">¥30,000</td><td>―</td></tr>
+          <tr><td>お米ちゃん</td><td class="num shu">¥20,000</td><td>―</td></tr>
+          <tr><td>ワーカーさん</td><td class="num shu">¥120,000</td><td>1人あたり ¥60,000 × 2名（基本的に1案件2名体制）</td></tr>
+          <tr><td>内部留保</td><td>なし</td><td>―</td></tr>
+          <tr><td><b>合計</b></td><td class="num shu"><b>¥170,000</b></td><td>1案件あたり</td></tr>
         </tbody>
       </table>
 
-      <h4 class="subsec">メンバーへの分配</h4>
-      <p>チームインセンティブは、当該案件の対象メンバー人数で<b>均等割</b>する。</p>
       <div class="formula">
-        <span class="fbox">チームインセンティブ</span>
-        <span class="op">÷</span>
-        <span class="fbox">メンバー人数</span>
+        <span class="fbox">¥60,000</span>
+        <span class="op">×</span>
+        <span class="fbox">2名</span>
         <span class="eq">＝</span>
-        <span class="fbox result">1名あたり支給額</span>
+        <span class="fbox result">¥120,000</span>
       </div>
+      <div class="diagram-caption">ワーカーさん単価 × 人数 ＝ ワーカー小計</div>
 
-      <div class="diagram-wrap">
-        <div class="diagram-title">図 1 ／ CS部署 報酬計算フロー</div>
-        <div class="diagram-caption">基本固定費（月額）と成約連動インセンティブ（階段式）の二階建て構造。</div>
-        <svg class="diagram-svg svg-flow" viewBox="0 0 540 820" xmlns="http://www.w3.org/2000/svg">
-          <defs>
-            <marker id="arrCs" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse">
-              <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a1612"/>
-            </marker>
-          </defs>
-
-          <!-- セクション①: 基本固定費 -->
-          <text x="270" y="32" text-anchor="middle" class="label-jp" font-size="20" font-weight="600" fill="#3d5a78">① 基本固定費（月額）</text>
-          <line x1="40" y1="42" x2="500" y2="42" stroke="#3d5a78" stroke-width="1.5"/>
-
-          <rect x="50" y="60" width="200" height="80" rx="4" fill="#fff" stroke="#3d5a78" stroke-width="2"/>
-          <text x="150" y="86" text-anchor="middle" class="label-jp" font-size="16" fill="#7a6f60">統括＋第二統括</text>
-          <text x="150" y="118" text-anchor="middle" font-size="22" font-weight="600" fill="#3d5a78" font-family="JetBrains Mono">¥80,000</text>
-
-          <rect x="290" y="60" width="200" height="80" rx="4" fill="#fff" stroke="#3d5a78" stroke-width="2"/>
-          <text x="390" y="84" text-anchor="middle" class="label-jp" font-size="16" fill="#7a6f60">ワーカー</text>
-          <text x="390" y="108" text-anchor="middle" font-size="20" font-weight="600" fill="#3d5a78" font-family="JetBrains Mono">¥20,000 × 人数</text>
-          <text x="390" y="128" text-anchor="middle" font-size="14" fill="#7a6f60">（1名あたり）</text>
-
-          <line x1="150" y1="140" x2="240" y2="170" stroke="#3d5a78" stroke-width="2"/>
-          <line x1="390" y1="140" x2="300" y2="170" stroke="#3d5a78" stroke-width="2" marker-end="url(#arrCs)"/>
-
-          <rect x="100" y="175" width="340" height="70" rx="4" fill="#3d5a78" stroke="#1f3046" stroke-width="2"/>
-          <text x="270" y="202" text-anchor="middle" font-size="14" fill="#f6f1e7" letter-spacing="2">FIXED COST</text>
-          <text x="270" y="228" text-anchor="middle" class="label-jp" font-size="22" font-weight="600" fill="#f6f1e7">案件月額固定費</text>
-
-          <!-- セクション②: インセンティブ -->
-          <text x="270" y="296" text-anchor="middle" class="label-jp" font-size="20" font-weight="600" fill="#a8201a">② インセンティブ（成約連動）</text>
-          <line x1="40" y1="306" x2="500" y2="306" stroke="#a8201a" stroke-width="1.5"/>
-
-          <rect x="40" y="325" width="460" height="80" rx="4" fill="#fff" stroke="#a8201a" stroke-width="2"/>
-          <text x="270" y="352" text-anchor="middle" class="label-jp" font-size="16" fill="#7a6f60">成約金額（無言フォロー掘り起こし）</text>
-          <text x="270" y="382" text-anchor="middle" font-size="18" font-weight="600" fill="#a8201a" font-family="JetBrains Mono">⌊成約÷100万⌋×100万×1.5%</text>
-
-          <line x1="270" y1="405" x2="270" y2="435" stroke="#a8201a" stroke-width="2" marker-end="url(#arrCs)"/>
-
-          <rect x="100" y="440" width="340" height="70" rx="4" fill="#a8201a" stroke="#7a1612" stroke-width="2"/>
-          <text x="270" y="467" text-anchor="middle" font-size="14" fill="#f6f1e7" letter-spacing="2">TEAM INCENTIVE</text>
-          <text x="270" y="493" text-anchor="middle" class="label-jp" font-size="22" font-weight="600" fill="#f6f1e7">チームインセンティブ</text>
-
-          <line x1="270" y1="510" x2="270" y2="540" stroke="#a8201a" stroke-width="2" marker-end="url(#arrCs)"/>
-
-          <rect x="100" y="545" width="340" height="80" rx="4" fill="#fff" stroke="#a8201a" stroke-width="2" stroke-dasharray="4 3"/>
-          <text x="270" y="575" text-anchor="middle" class="label-jp" font-size="18" fill="#a8201a" font-weight="600">÷ メンバー人数（均等割）</text>
-          <text x="270" y="603" text-anchor="middle" font-size="16" fill="#7a6f60" font-family="JetBrains Mono">1名あたり支給額</text>
-
-          <!-- 合流：両系統がメンバーに -->
-          <line x1="270" y1="245" x2="270" y2="275" stroke="#1a1612" stroke-width="2" stroke-dasharray="6 4"/>
-          <line x1="270" y1="625" x2="270" y2="700" stroke="#1a1612" stroke-width="2.5"/>
-
-          <rect x="80" y="710" width="380" height="80" rx="4" fill="#1a1612" stroke="#1a1612" stroke-width="2"/>
-          <text x="270" y="740" text-anchor="middle" class="label-jp" font-size="16" fill="#f6f1e7" letter-spacing="2">PAYOUT</text>
-          <text x="270" y="768" text-anchor="middle" class="label-jp" font-size="22" font-weight="600" fill="#f6f1e7">CS部署メンバーへの支給</text>
-        </svg>
-      </div>
-
-      <div class="example">
-        <span class="example-label">CASE 01</span>
-        <div class="example-title">計算例 ― 成約金額 ¥3,900,000 ／ ワーカー4名 ／ メンバー6名</div>
-
-        <h4 class="subsec" style="margin-top:6px">基本固定費</h4>
-        <div class="calc-row"><span class="label">統括 ＋ 第二統括</span><span class="val">¥80,000</span></div>
-        <div class="calc-row"><span class="label">ワーカー 4名 × ¥20,000</span><span class="val">¥80,000</span></div>
-        <div class="calc-row total"><span class="label">案件月額固定費</span><span class="val">¥160,000</span></div>
-
-        <h4 class="subsec" style="margin-top:18px">インセンティブ</h4>
-        <div class="calc-row"><span class="label">⌊3,900,000 ÷ 1,000,000⌋ ＝ 3</span><span class="val">3 段</span></div>
-        <div class="calc-row"><span class="label">対象金額：3 × 1,000,000</span><span class="val">¥3,000,000</span></div>
-        <div class="calc-row"><span class="label">× 1.5%</span><span class="val">¥45,000</span></div>
-        <div class="calc-row total"><span class="label">チームインセンティブ</span><span class="val">¥45,000</span></div>
-
-        <h4 class="subsec" style="margin-top:18px">メンバー分配（6名均等）</h4>
-        <div class="calc-row"><span class="label">¥45,000 ÷ 6名</span><span class="val">¥7,500 ／ 1名</span></div>
+      <div class="callout shu">
+        <div class="callout-label">適用範囲</div>
+        本特例は<b>フィアナ案件にのみ適用</b>する。標準は<b>第8条</b>のとおり。
       </div>
 
       <a href="#ch2" class="back-top">▲ TOP</a>
@@ -978,7 +894,7 @@
       </div>
 
       <div class="diagram-wrap">
-        <div class="diagram-title">図 2 ／ 営業部署 報酬計算フロー</div>
+        <div class="diagram-title">図 1 ／ 営業部署 報酬計算フロー</div>
         <div class="diagram-caption">マネジメント枠は4Tier(2.5/3.0/3.75/4.5%)からKPIで選択。クローザー枠は販売金額連動で独立計算。</div>
         <svg class="diagram-svg svg-flow" viewBox="0 0 540 720" xmlns="http://www.w3.org/2000/svg">
           <defs>
@@ -1131,7 +1047,7 @@
       </div>
 
       <div class="diagram-wrap">
-        <div class="diagram-title">図 3 ／ 動画部署 報酬計算フロー</div>
+        <div class="diagram-title">図 2 ／ 動画部署 報酬計算フロー</div>
         <div class="diagram-caption">動画マーケを仕掛けた案件のみ対象。フロント・アップセルは10%、バックエンド・JVは2%を乗じる。</div>
         <svg class="diagram-svg svg-flow" viewBox="0 0 540 620" xmlns="http://www.w3.org/2000/svg">
           <defs>
@@ -1314,7 +1230,7 @@
       </table>
 
       <div class="diagram-wrap">
-        <div class="diagram-title">図 4 ／ 広告部署 報酬計算フロー（通常案件）</div>
+        <div class="diagram-title">図 3 ／ 広告部署 報酬計算フロー（通常案件）</div>
         <div class="diagram-caption">統括枠（調整後利益×5%）と、運用者・製作者枠（通常 a＋b ／ 特例 2%）を並列に算定。</div>
         <svg class="diagram-svg svg-flow" viewBox="0 0 540 920" xmlns="http://www.w3.org/2000/svg">
           <defs>
@@ -1509,7 +1425,7 @@
       </div>
 
       <div class="diagram-wrap">
-        <div class="diagram-title">図 5 ／ サポート部署 報酬計算フロー</div>
+        <div class="diagram-title">図 4 ／ サポート部署 報酬計算フロー</div>
         <div class="diagram-caption">変動要素なし。個別契約で定めた月額固定額をそのまま支給する。</div>
         <svg class="diagram-svg svg-flow" viewBox="0 0 540 480" xmlns="http://www.w3.org/2000/svg">
           <defs>
@@ -1610,7 +1526,7 @@
       </div>
 
       <div class="diagram-wrap">
-        <div class="diagram-title">図 6 ／ インスタ部署 利益分配フロー</div>
+        <div class="diagram-title">図 5 ／ インスタ部署 利益分配フロー</div>
         <div class="diagram-caption">売上から4項目の経費を控除した利益合計を、案件90%／インスタ部署10%で分配（フロント・アップセル共通）。</div>
         <svg class="diagram-svg svg-flow" viewBox="0 0 540 760" xmlns="http://www.w3.org/2000/svg">
           <defs>
@@ -1732,7 +1648,7 @@
       </div>
 
       <div class="diagram-wrap">
-        <div class="diagram-title">図 7 ／ サブマーケ 報酬計算フロー</div>
+        <div class="diagram-title">図 6 ／ サブマーケ 報酬計算フロー</div>
         <div class="diagram-caption">基本時給（全メンバー）と統括報酬（純利益の2%、前田責任者案件は除外）の二系統。</div>
         <svg class="diagram-svg svg-flow" viewBox="0 0 540 680" xmlns="http://www.w3.org/2000/svg">
           <defs>
@@ -1884,7 +1800,7 @@
       </div>
 
       <div class="diagram-wrap">
-        <div class="diagram-title">図 8 ／ エバーグリーン案件 純利益分配フロー</div>
+        <div class="diagram-title">図 7 ／ エバーグリーン案件 純利益分配フロー</div>
         <div class="diagram-caption">売上から経費を控除した純利益を、メンバー間で配分（外部協業先がある案件のみ、外部協業先も分配メンバーに加わる）。</div>
         <svg class="diagram-svg svg-flow" viewBox="0 0 540 720" xmlns="http://www.w3.org/2000/svg">
           <defs>
@@ -2064,7 +1980,7 @@
       </div>
 
       <div class="diagram-wrap">
-        <div class="diagram-title">図 9 ／ JV企画 純利益分配フロー</div>
+        <div class="diagram-title">図 8 ／ JV企画 純利益分配フロー</div>
         <div class="diagram-caption">売上から経費（大舘さん絡む場合は固定¥500,000含む）と外部報酬（任意）を控除して純利益を算定。役割別33%×3＋残り1%で分配。</div>
         <svg class="diagram-svg svg-flow" viewBox="0 0 540 1220" xmlns="http://www.w3.org/2000/svg">
           <defs>
@@ -2297,7 +2213,7 @@
 
 
   <footer>
-    <span class="ornament">◆</span> INTERNAL COMPENSATION MANUAL <span class="ornament">◆</span> Ver. 11.4 <span class="ornament">◆</span> 2026 <span class="ornament">◆</span>
+    <span class="ornament">◆</span> INTERNAL COMPENSATION MANUAL <span class="ornament">◆</span> Ver. 11.5 <span class="ornament">◆</span> 2026 <span class="ornament">◆</span>
   </footer>
 
 </div>
