@@ -1,0 +1,7 @@
+node_modules/
+.env
+.lpro-profile/
+bridge.db
+bridge.db-wal
+bridge.db-shm
+*.log
