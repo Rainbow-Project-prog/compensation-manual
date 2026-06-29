@@ -16,6 +16,13 @@ export async function initBrowser(): Promise<void> {
   await ensureLoggedIn();
 }
 
+/** 終了時に呼ぶ。ブラウザ（永続コンテキスト）を閉じる */
+export async function closeBrowser(): Promise<void> {
+  try { await ctx?.close(); } catch { /* already closed */ }
+  ctx = null;
+  page = null;
+}
+
 export async function ensureLoggedIn(): Promise<void> {
   const p = page!;
   await p.goto(cfg.talkUrl, { waitUntil: 'domcontentloaded' });

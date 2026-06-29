@@ -2,7 +2,8 @@
 
 Lpro のトーク応対画面を Playwright で自動操作し、新着を Telegram に流し、Telegram で打った返信を Lpro に書き戻すブリッジ。顧客1人 = 1トピックで取り違えを防ぐ。
 
-詳細な背景・設計・リスクは [HANDOFF.md](./HANDOFF.md) を参照（このリポジトリの仕様書）。
+- 詳細な背景・設計・リスク → [HANDOFF.md](./HANDOFF.md)（仕様書）
+- 壊れたとき・困ったときの復旧手順 → [RUNBOOK.md](./RUNBOOK.md)（運用ランブック）
 
 ## 構成
 

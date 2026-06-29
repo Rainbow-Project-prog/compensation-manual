@@ -1,9 +1,11 @@
 import { cfg } from './config.js';
-import { dbApi } from './db.js';
+import { dbApi, closeDb } from './db.js';
 import { runExclusive } from './queue.js';
 import { decideDelivery } from './logic.js';
-import { initBrowser, ensureLoggedIn, pollConversations, readInbound, sendReply } from './lpro-adapter.js';
-import { startBot, setReplyHandler, ensureTopic, pushInbound } from './telegram.js';
+import { initBrowser, closeBrowser, ensureLoggedIn, pollConversations, readInbound, sendReply } from './lpro-adapter.js';
+import { startBot, stopBot, setReplyHandler, ensureTopic, pushInbound } from './telegram.js';
+
+let shuttingDown = false;
 
 async function pollOnce(): Promise<void> {
   const convs = await runExclusive(() => pollConversations());
@@ -44,7 +46,7 @@ async function main(): Promise<void> {
 
   // Lpro → Telegram（巡回）
   console.log('巡回開始');
-  for (;;) {
+  while (!shuttingDown) {
     try {
       await pollOnce();
     } catch (e) {
@@ -56,8 +58,23 @@ async function main(): Promise<void> {
         console.error('再ログイン失敗（次の巡回で再試行）:', e2);
       }
     }
+    if (shuttingDown) break;
     await new Promise((r) => setTimeout(r, cfg.pollIntervalMs));
   }
 }
+
+/** Ctrl+C / kill 時に資源を片付ける（chromium残骸・WAL破損を防ぐ） */
+async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`\n${signal} 受信。終了処理中…`);
+  try { await stopBot(); } catch (e) { console.error('bot停止エラー:', e); }
+  try { await closeBrowser(); } catch (e) { console.error('ブラウザ終了エラー:', e); }
+  try { closeDb(); } catch (e) { console.error('DB終了エラー:', e); }
+  console.log('終了しました。');
+  process.exit(0);
+}
+process.on('SIGINT', () => void shutdown('SIGINT'));
+process.on('SIGTERM', () => void shutdown('SIGTERM'));
 
 main().catch((e) => { console.error(e); process.exit(1); });

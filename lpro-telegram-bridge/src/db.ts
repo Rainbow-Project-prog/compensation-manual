@@ -38,3 +38,8 @@ export const dbApi = {
   byThread: (threadId: number) =>
     db.prepare('SELECT * FROM customers WHERE topic_thread_id=?').get(threadId) as Customer | undefined,
 };
+
+/** 終了時に呼ぶ。WAL を確定してファイルを閉じる */
+export function closeDb(): void {
+  try { db.close(); } catch { /* already closed */ }
+}
