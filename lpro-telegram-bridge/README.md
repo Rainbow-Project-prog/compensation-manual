@@ -50,13 +50,28 @@ npm run chatid
 npm start
 ```
 
+> `npm start` 実行時は自動で `npm run doctor`（事前チェック）が走り、`.env` 未記入や
+> SELECTORS の `'TODO'` 残りがあると起動前に止まる。
+
 常時起動（任意）:
 
 ```bash
 npm i -g pm2
-pm2 start npm --name lpro-bridge -- start
+pm2 start ecosystem.config.cjs   # 自動再起動つき（restart_delay 5s / max_restarts 10）
 pm2 save
+pm2 startup                       # OS起動時の自動立ち上げ（任意）
 ```
+
+## npm スクリプト
+
+| コマンド | 説明 |
+|---------|------|
+| `npm run doctor` | 起動前チェック。`.env` の必須項目と SELECTORS の `'TODO'` 残りを検出（`npm start` 時に自動実行） |
+| `npm start` | 本起動（巡回ループ）。poll エラー時はセッション切れを疑い自動で再ログインを試みる |
+| `npm run login` | Lpro 初回ログイン（headedブラウザ） |
+| `npm run chatid` | Telegram グループの chat_id 取得 |
+| `npm test` | 配信判定ロジック（`src/logic.ts`）の単体テスト |
+| `npm run typecheck` | `tsc --noEmit` で型チェック |
 
 ## やること（DOMセレクタ確定）
 

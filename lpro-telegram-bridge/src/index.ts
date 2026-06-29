@@ -1,7 +1,8 @@
 import { cfg } from './config.js';
 import { dbApi } from './db.js';
 import { runExclusive } from './queue.js';
-import { initBrowser, pollConversations, readInbound, sendReply } from './lpro-adapter.js';
+import { decideDelivery } from './logic.js';
+import { initBrowser, ensureLoggedIn, pollConversations, readInbound, sendReply } from './lpro-adapter.js';
 import { startBot, setReplyHandler, ensureTopic, pushInbound } from './telegram.js';
 
 async function pollOnce(): Promise<void> {
@@ -14,14 +15,9 @@ async function pollOnce(): Promise<void> {
     const inbound = await runExclusive(() => readInbound(conv));
     const cust = dbApi.get(conv.customerKey)!;
 
-    if (!cust.bootstrapped) {
-      // 既存履歴は配らずに既読扱い（過去ログのスパム防止）
-      dbApi.setSeen(conv.customerKey, inbound.length, 1);
-      continue;
-    }
-    const fresh = inbound.slice(cust.seen_count);
-    for (const m of fresh) await pushInbound(threadId, m.text);
-    if (inbound.length !== cust.seen_count) dbApi.setSeen(conv.customerKey, inbound.length, 1);
+    const { deliver, newSeen } = decideDelivery(cust, inbound);
+    for (const m of deliver) await pushInbound(threadId, m.text);
+    if (newSeen !== null) dbApi.setSeen(conv.customerKey, newSeen, 1);
   }
 }
 
@@ -49,8 +45,17 @@ async function main(): Promise<void> {
   // Lpro → Telegram（巡回）
   console.log('巡回開始');
   for (;;) {
-    try { await pollOnce(); }
-    catch (e) { console.error('poll error:', e); }
+    try {
+      await pollOnce();
+    } catch (e) {
+      console.error('poll error:', e);
+      // セッション切れの可能性 → 再ログイン待ちを挟んで復旧を試みる（8章の改善）
+      try {
+        await runExclusive(() => ensureLoggedIn());
+      } catch (e2) {
+        console.error('再ログイン失敗（次の巡回で再試行）:', e2);
+      }
+    }
     await new Promise((r) => setTimeout(r, cfg.pollIntervalMs));
   }
 }

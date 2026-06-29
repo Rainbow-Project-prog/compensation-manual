@@ -4,9 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "prestart": "tsx src/doctor.ts",
     "start": "tsx src/index.ts",
     "login": "tsx src/login.ts",
-    "chatid": "tsx src/chatid.ts"
+    "chatid": "tsx src/chatid.ts",
+    "doctor": "tsx src/doctor.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.8.0",

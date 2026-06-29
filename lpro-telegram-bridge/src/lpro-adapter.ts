@@ -16,7 +16,7 @@ export async function initBrowser(): Promise<void> {
   await ensureLoggedIn();
 }
 
-async function ensureLoggedIn(): Promise<void> {
+export async function ensureLoggedIn(): Promise<void> {
   const p = page!;
   await p.goto(cfg.talkUrl, { waitUntil: 'domcontentloaded' });
   const marker = p.locator(SELECTORS.loggedInMarker).first();
