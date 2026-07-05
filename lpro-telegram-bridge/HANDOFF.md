@@ -5,18 +5,12 @@
 
 ---
 
-## 0. Claude Code への最初の指示（このままコピペでOK）
+## 0. Claude Code への最初の指示
 
-```
-このリポジトリは「Lpro ⇄ Telegram ブリッジ」を作るプロジェクトです。
-まず本ドキュメント全体を読んでください。その上で:
-1. 「3. セットアップ」のファイル一式を作成（コードはこのドキュメントのものをそのまま使用）
-2. `npm i` と `npx playwright install chromium` を実行
-3. 私（ユーザー）が後で Lpro の DOM 断片を貼るので、src/config.ts の SELECTORS と
-   src/lpro-adapter.ts の TODO（顧客キー取り出し・会話の開き方）を一緒に埋める
-4. `npm run login` → `npm run chatid` → `npm start` の順で動作確認を手伝う
-私の環境は Windows + VS Code + Node.js です。
-```
+> **【更新】ファイル一式は既に実装済み**（クラウドセッションで作成・レビュー・修正済み）。
+> このセクションの旧指示（ファイル作成から始める）は完了しているため使わないこと。
+> **次のセッションはまず [FABLE5_HANDOFF.md](./FABLE5_HANDOFF.md) を読んで着手する。**
+> そちらに「事前レビューで確定した指摘と対応状況」「残タスク」「レビュー観点」がまとまっている。
 
 ---
 
@@ -80,15 +74,21 @@ lpro-telegram-bridge/
 ├─ package.json
 ├─ tsconfig.json
 ├─ .env                  ← .env.example をコピーして記入
-└─ src/
-   ├─ config.ts
-   ├─ db.ts
-   ├─ queue.ts
-   ├─ telegram.ts
-   ├─ lpro-adapter.ts
-   ├─ chatid.ts
-   ├─ login.ts
-   └─ index.ts
+├─ ecosystem.config.cjs  ← PM2 常時起動設定
+├─ src/
+│  ├─ config.ts          ← SELECTORS（Lpro依存の集約点）
+│  ├─ db.ts
+│  ├─ queue.ts
+│  ├─ logic.ts           ← 配信判定の純関数
+│  ├─ preflight.ts       ← 起動前チェック本体
+│  ├─ doctor.ts          ← 起動前チェック CLI
+│  ├─ telegram.ts
+│  ├─ lpro-adapter.ts
+│  ├─ chatid.ts
+│  ├─ login.ts
+│  └─ index.ts
+└─ test/
+   └─ logic.test.ts
 ```
 
 ### 3.4 インストール
@@ -133,10 +133,11 @@ npm start
 常時起動（任意）：
 ```bash
 npm i -g pm2
-pm2 start npm --name lpro-bridge -- start
+pm2 start ecosystem.config.cjs   # ※ `pm2 start npm -- start` は Windows で動かない
 pm2 save
 ```
 ※ headed ブラウザはデスクトップセッションが必要。ログイン確立後に `HEADLESS=true` でも動くことが多いが、もし弾かれるなら headed のまま運用する。
+※ Windows の自動起動・停止シグナルの注意は RUNBOOK.md「E. プロセスが落ちる / 常時起動」を参照。
 
 ---
 
@@ -170,8 +171,18 @@ Lpro のトーク応対画面で F12 を開き、以下を右クリック → Co
 
 ## 8. 既知の注意点・将来改善
 
-- **件数ベースの新着検知**は append-only 前提。リスト仮想化や履歴の遅延読み込みがある場合は、メッセージの一意ID／時刻での重複排除（`seen_messages` テーブル）に切り替える。
-- 顧客名のみをキーにすると **同名衝突**で取り違える。一意属性があれば必ずそちらを `customerKey` に使う。
+- **件数ベースの新着検知**は append-only 前提。件数減少サイクルは「部分レンダリング」とみなして
+  スキップする防御を実装済みだが、**同数入れ替わり（1件消えて1件増える）は原理的に検知できない**。
+  Lpro のメッセージ要素に一意ID／時刻属性があれば、フィンガープリント方式（`seen_messages` テーブル）
+  に切り替える（FABLE5_HANDOFF.md の最重要残タスク）。
+- 顧客名のみをキーにすると **同名衝突**で取り違える。一意属性があれば必ずそちらを `customerKey` に使う
+  （`SELECTORS.customerKeyAttr`）。行全文をキーにしてはならない（プレビュー変化でキーが揺れ、
+  顧客1人に複数トピックができる）。
 - ポーリングは「未読のみ巡回」（`ONLY_UNREAD=true`）が軽い。全件巡回は会話数が多いと遅くなる。
-- 画像・スタンプ等の非テキストは本実装では未対応（テキスト返信が主目的）。必要なら吹き出し種別を判定して Telegram 側にも添付する拡張を追加。
-- セッション切れ時の自動再ログイン待ち（`ensureLoggedIn` の再呼び出し）を poll エラー時に挟むと安定する。
+- 画像・スタンプ等の非テキストは本実装では未対応（テキスト返信が主目的）。Telegram 側で打った
+  非テキストには「送信できない」旨を自動返信する。転送対応は将来拡張。
+- ~~セッション切れ時の自動再ログイン待ちを poll エラー時に挟むと安定する~~ → **実装済み**
+  （poll エラー時の `ensureLoggedIn`、ブラウザクラッシュ時の自動再起動を含む）。
+- 初回メッセージの取りこぼし防止のため、起動時に全会話をブートストラップし、稼働中に初めて
+  現れた会話は末尾 `BOOTSTRAP_TAIL` 件だけ配信する（「初回は一切配らない」から仕様変更。
+  過去ログ全量スパムは引き続き防止される）。

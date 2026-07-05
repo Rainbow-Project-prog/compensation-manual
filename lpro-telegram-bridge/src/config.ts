@@ -9,6 +9,9 @@ export const cfg = {
   onlyUnread: (process.env.ONLY_UNREAD ?? 'true') === 'true',
   headless: (process.env.HEADLESS ?? 'false') === 'true',
   userDataDir: process.env.USER_DATA_DIR ?? './.lpro-profile',
+  // 稼働中に初めて現れた顧客（=いま送ってきた新規顧客）の初回配信件数。
+  // 0にすると初回は何も配らない＝初回メッセージを取りこぼすので注意。
+  bootstrapTail: Number(process.env.BOOTSTRAP_TAIL ?? 5),
 };
 
 function required(k: string): string {
@@ -27,6 +30,11 @@ export const SELECTORS = {
   loggedInMarker: 'TODO',       // 例: '[data-testid="talk-room-list"]'
   // 会話一覧：顧客1件分の行（複数マッチ想定）
   conversationItem: 'TODO',     // 例: '.talk-list .talk-list-item'
+  // 会話行内：顧客名だけを含む要素（★重要★ 行全文はプレビューや未読数を含み
+  // キーが揺れて顧客1人に複数トピックができるため、名前要素を必ず特定する）
+  customerName: 'TODO',         // 例: '.talk-list-item__name'
+  // 会話行の一意ID「属性名」（セレクタではなく属性名）。あれば最優先でキーに使う
+  customerKeyAttr: 'TODO',      // 例: 'data-user-id'
   // 会話行内：未読バッジ（存在すれば未読）
   unreadBadge: 'TODO',          // 例: '.unread-badge'
   // メッセージ吹き出し（会話を開いた後／複数マッチ）

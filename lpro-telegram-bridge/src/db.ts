@@ -30,8 +30,15 @@ export const dbApi = {
       `INSERT INTO customers (customer_key,name,created_at) VALUES (?,?,?)
        ON CONFLICT(customer_key) DO UPDATE SET name=excluded.name`
     ).run(key, name, Date.now()),
+  // upsert形: 行が無い状態で呼ばれても紐付けを失わない（クラッシュ時の重複トピック防止）
   setTopic: (key: string, threadId: number) =>
-    db.prepare('UPDATE customers SET topic_thread_id=? WHERE customer_key=?').run(threadId, key),
+    db.prepare(
+      `INSERT INTO customers (customer_key, topic_thread_id, created_at) VALUES (?,?,?)
+       ON CONFLICT(customer_key) DO UPDATE SET topic_thread_id=excluded.topic_thread_id`
+    ).run(key, threadId, Date.now()),
+  // トピックが削除されていた場合に紐付けを外す（次回配信時に作り直す）
+  clearTopic: (key: string) =>
+    db.prepare('UPDATE customers SET topic_thread_id=NULL WHERE customer_key=?').run(key),
   setSeen: (key: string, count: number, bootstrapped = 1) =>
     db.prepare('UPDATE customers SET seen_count=?, bootstrapped=? WHERE customer_key=?')
       .run(count, bootstrapped, key),
