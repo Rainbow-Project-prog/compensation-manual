@@ -24,6 +24,12 @@ export async function initBrowser(): Promise<void> {
   ctx = await chromium.launchPersistentContext(cfg.userDataDir, {
     headless: cfg.headless,
     viewport: { width: 1280, height: 900 },
+    // Ctrl+C / kill の終了処理は index.ts の shutdown() が担う。Playwright 既定のシグナルハンドラは
+    // ブラウザを閉じた直後に process.exit してしまい、返信の排水・bot停止・DBクローズを先取りで打ち切る
+    // （プロセス終了時の chromium の後始末は Playwright の exit ハンドラが引き続き行う）
+    handleSIGINT: false,
+    handleSIGTERM: false,
+    handleSIGHUP: false,
   });
   page = ctx.pages()[0] ?? (await ctx.newPage());
   await ensureLoggedIn();
@@ -36,10 +42,15 @@ export async function closeBrowser(): Promise<void> {
   page = null;
 }
 
-/** ブラウザ/ページが閉じられた系のエラーか（復旧判定用） */
+/** ブラウザ/ページが閉じられた・クラッシュした系のエラーか（復旧判定用） */
 export function isBrowserGoneError(e: unknown): boolean {
   const m = String(e);
-  return /Target (page|context|browser).*closed|browser has been closed|context.*closed|Target closed/i.test(m);
+  return /Target (page|context|browser).*closed|browser has been closed|context.*closed|Target closed|Page crashed|Target crashed|browser.*disconnected/i.test(m);
+}
+
+/** ページが使えない状態か（initBrowser 失敗後の null 固定・タブ閉鎖の検知用） */
+export function pageGone(): boolean {
+  return !page || page.isClosed();
 }
 
 export async function ensureLoggedIn(): Promise<void> {
@@ -51,8 +62,11 @@ export async function ensureLoggedIn(): Promise<void> {
   }
   const p = page!;
   await p.goto(cfg.talkUrl, { waitUntil: 'domcontentloaded' });
-  const marker = p.locator(SELECTORS.loggedInMarker).first();
-  const ok = (await marker.count()) > 0 && (await marker.isVisible().catch(() => false));
+  // 一発チェックだと JS レンダリングの遅延だけでログイン済みを「未ログイン」と誤判定するため、
+  // マーカーの出現を一定時間待ってから判断する
+  const ok = await p.waitForSelector(SELECTORS.loggedInMarker, { timeout: 15_000, state: 'visible' })
+    .then(() => true)
+    .catch(() => false);
   if (!ok) {
     if (cfg.headless) {
       throw new Error(
@@ -75,10 +89,21 @@ async function extractIdentity(
   let customerKey = '';
   if (SELECTORS.customerKeyAttr !== 'TODO') {
     customerKey = clean(await item.getAttribute(SELECTORS.customerKeyAttr));
+    if (!customerKey) {
+      // キー属性が取れない行を名前キーにフォールバックすると、openConversation は属性照合しか
+      // しないため「永久に開けない顧客」が生まれる。取り違え防止のため行ごとスキップする
+      warnOnce(
+        'key-attr-missing',
+        `⚠️ customerKeyAttr("${SELECTORS.customerKeyAttr}") の属性値が取れない会話行があります。` +
+        '取り違え防止のためスキップします（属性名が正しいか確認してください）。'
+      );
+      return null;
+    }
   }
   let name = '';
   if (SELECTORS.customerName !== 'TODO') {
-    name = clean(await item.locator(SELECTORS.customerName).first().textContent().catch(() => ''));
+    // トピック名は Telegram の128字上限があるため名前経由でも60字に切り詰める
+    name = clean(await item.locator(SELECTORS.customerName).first().textContent().catch(() => '')).slice(0, 60);
   }
   if (!name) {
     // フォールバック: 行全文。プレビューや未読数を含むため名前としては不安定
@@ -108,6 +133,15 @@ async function extractIdentity(
 export async function pollConversations(): Promise<Conversation[]> {
   const p = page!;
   await p.goto(cfg.talkUrl, { waitUntil: 'domcontentloaded' });
+  // セッション切れの典型形は「ログイン画面へリダイレクトされる」。ログイン画面が偶然
+  // conversationItem にマッチする行を描画しても誤読しないよう、一覧を読む前に毎回
+  // ログイン済みマーカーを検証し、見えなければエラーにして復旧経路（ensureLoggedIn）へ回す
+  const loggedIn = await p.waitForSelector(SELECTORS.loggedInMarker, { timeout: 15_000, state: 'visible' })
+    .then(() => true)
+    .catch(() => false);
+  if (!loggedIn) {
+    throw new Error('ログイン済みマーカーが見えません（セッション切れの疑い）');
+  }
   await p.waitForSelector(SELECTORS.conversationItem, { timeout: 15_000 }).catch(() => {});
   const items = p.locator(SELECTORS.conversationItem);
   const n = await items.count();
@@ -130,7 +164,16 @@ export async function readInbound(conv: Conversation): Promise<InboundMsg[]> {
   const p = page!;
   await openConversation(conv);
   const bubbles = p.locator(SELECTORS.messageBubble);
-  const n = await bubbles.count();
+  // openConversation の waitForSelector は最初の1吹き出しで resolve するため、
+  // レンダリング途中の過小カウントを既読基準にしないよう件数が安定するまで待つ
+  // （安定済みの通常ケースは150msで抜ける。不安定な間だけ300ms間隔で最大約3秒）
+  let n = await bubbles.count();
+  for (let i = 0; i < 10; i++) {
+    await p.waitForTimeout(i === 0 ? 150 : 300);
+    const m = await bubbles.count();
+    if (m === n) break;
+    n = m;
+  }
   const res: InboundMsg[] = [];
   for (let i = 0; i < n; i++) {
     const b = bubbles.nth(i);
@@ -192,7 +235,8 @@ async function openConversation(conv: Conversation): Promise<void> {
   } else if (SELECTORS.customerName !== 'TODO') {
     for (let i = 0; i < n && !clicked; i++) {
       const item = items.nth(i);
-      const nm = clean(await item.locator(SELECTORS.customerName).first().textContent().catch(() => ''));
+      // extractIdentity 側の60字切り詰めと揃える（不一致だと長い名前の会話が永久に開けない）
+      const nm = clean(await item.locator(SELECTORS.customerName).first().textContent().catch(() => '')).slice(0, 60);
       if (nm === conv.name) {
         await item.click();
         clicked = true;

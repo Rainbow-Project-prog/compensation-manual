@@ -1,22 +1,41 @@
 import 'dotenv/config';
+import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
+
+// DB・プロファイルの既定パスは CWD ではなくパッケージルート基準にする
+// （別ディレクトリから起動すると .gitignore の保護外に顧客データが生成されるため）
+const pkgRoot = fileURLToPath(new URL('..', import.meta.url));
 
 export const cfg = {
   telegramToken: required('TELEGRAM_BOT_TOKEN'),
   groupChatId: process.env.GROUP_CHAT_ID ? Number(process.env.GROUP_CHAT_ID) : 0,
   loginUrl: required('LPRO_LOGIN_URL'),
   talkUrl: required('LPRO_TALK_URL'),
-  pollIntervalMs: Number(process.env.POLL_INTERVAL_MS ?? 8000),
+  pollIntervalMs: Math.max(1000, num('POLL_INTERVAL_MS', 8000)),
   onlyUnread: (process.env.ONLY_UNREAD ?? 'true') === 'true',
   headless: (process.env.HEADLESS ?? 'false') === 'true',
-  userDataDir: process.env.USER_DATA_DIR ?? './.lpro-profile',
+  userDataDir: process.env.USER_DATA_DIR ?? join(pkgRoot, '.lpro-profile'),
   // 稼働中に初めて現れた顧客（=いま送ってきた新規顧客）の初回配信件数。
   // 0にすると初回は何も配らない＝初回メッセージを取りこぼすので注意。
-  bootstrapTail: Number(process.env.BOOTSTRAP_TAIL ?? 5),
+  bootstrapTail: num('BOOTSTRAP_TAIL', 5),
 };
 
 function required(k: string): string {
   const v = process.env[k];
   if (!v) throw new Error(`環境変数 ${k} が未設定です（.env を確認）`);
+  return v;
+}
+
+// タイプミス（NaN）を黙って通すと「初回メッセージの無音喪失」や「ウェイトなし巡回」になるため既定値へ倒す
+// （doctor/preflight でも同じ値を問題として検出する）
+function num(k: string, def: number): number {
+  const raw = process.env[k];
+  if (raw === undefined || raw.trim() === '') return def;
+  const v = Number(raw);
+  if (!Number.isFinite(v)) {
+    console.warn(`環境変数 ${k} が数値ではありません: "${raw}" → 既定値 ${def} を使用します`);
+    return def;
+  }
   return v;
 }
 

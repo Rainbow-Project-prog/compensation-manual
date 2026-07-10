@@ -16,7 +16,7 @@
     "test": "node --import tsx --test test/logic.test.ts"
   },
   "dependencies": {
-    "better-sqlite3": "^11.8.0",
+    "better-sqlite3": "^12.4.1",
     "dotenv": "^16.4.7",
     "grammy": "^1.30.0",
     "playwright": "^1.48.0"

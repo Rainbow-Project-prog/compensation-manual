@@ -1,6 +1,10 @@
 import Database from 'better-sqlite3';
+import { fileURLToPath } from 'node:url';
 
-const db = new Database('bridge.db');
+// CWD 依存にすると別ディレクトリから起動したとき .gitignore の保護外に顧客DBが生成されるため、
+// パッケージルート基準の固定パスにする
+const dbPath = fileURLToPath(new URL('../bridge.db', import.meta.url));
+const db = new Database(dbPath);
 db.pragma('journal_mode = WAL');
 
 db.exec(`
@@ -11,6 +15,10 @@ CREATE TABLE IF NOT EXISTS customers (
   bootstrapped    INTEGER NOT NULL DEFAULT 0,
   seen_count      INTEGER NOT NULL DEFAULT 0,
   created_at      INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
 );
 `);
 
@@ -44,6 +52,15 @@ export const dbApi = {
       .run(count, bootstrapped, key),
   byThread: (threadId: number) =>
     db.prepare('SELECT * FROM customers WHERE topic_thread_id=?').get(threadId) as Customer | undefined,
+  // GROUP_CHAT_ID 変更検知用（旧グループのスレッドIDは新グループの別トピックと衝突し誤配信の温床になる）
+  getMeta: (key: string) =>
+    (db.prepare('SELECT value FROM meta WHERE key=?').get(key) as { value: string } | undefined)?.value,
+  setMeta: (key: string, value: string) =>
+    db.prepare(
+      `INSERT INTO meta (key,value) VALUES (?,?)
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value`
+    ).run(key, value),
+  clearAllTopics: () => db.prepare('UPDATE customers SET topic_thread_id=NULL').run(),
 };
 
 /** 終了時に呼ぶ。WAL を確定してファイルを閉じる */

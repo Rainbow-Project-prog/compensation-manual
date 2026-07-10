@@ -22,8 +22,8 @@ module.exports = {
       restart_delay: 5000,
       max_restarts: 10,
       min_uptime: '30s',
-      // 終了処理（ブラウザ/DBクローズ）の猶予。これを超えると強制kill
-      kill_timeout: 15000,
+      // 終了処理（実行中の返信の排水 最大20+5秒 → bot/ブラウザ/DBクローズ）の猶予。これを超えると強制kill
+      kill_timeout: 40000,
       shutdown_with_message: true,
       env: {
         NODE_ENV: 'production',
