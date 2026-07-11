@@ -1,11 +1,11 @@
 import { cfg } from './config.js';
 import { dbApi, closeDb } from './db.js';
 import { runExclusive, drainQueue } from './queue.js';
-import { decideDelivery } from './logic.js';
+import { decideDeliveryBySeen } from './logic.js';
 import { runDoctor, printResult } from './preflight.js';
 import {
   initBrowser, closeBrowser, isBrowserGoneError, pageGone, ensureLoggedIn,
-  pollConversations, readInbound, sendReply, type Conversation,
+  pollConversations, readInbound, sendReply, refreshTalkView, type Conversation,
 } from './lpro-adapter.js';
 import {
   startBot, stopBot, setReplyHandler, ensureTopic, pushInbound, reopenTopic, notifyOps,
@@ -54,6 +54,8 @@ async function bootstrapAll(): Promise<void> {
     try {
       dbApi.upsert(conv.customerKey, conv.name);
       const inbound = await runExclusive(() => readInbound(conv));
+      // 表示中の全メッセージを「既知」として台帳に記録（配信はしない）
+      for (const m of inbound) dbApi.addSeen(conv.customerKey, m.hash);
       dbApi.setSeen(conv.customerKey, inbound.length, 1);
       done++;
     } catch (e) {
@@ -78,14 +80,30 @@ async function processConversation(conv: Conversation): Promise<void> {
   const inbound = await readInbound(conv);
   const cust = dbApi.get(conv.customerKey)!;
 
-  // 稼働中に初めて現れた会話（=いま未読で送ってきた新規顧客）は末尾 bootstrapTail 件だけ配る。
-  // 0件配信で既読化すると初回メッセージが永久に失われるため（事前レビュー確定指摘）。
-  const { deliver, newSeen } = decideDelivery(cust, inbound, { bootstrapTail: cfg.bootstrapTail });
+  // フィンガープリント方式: 台帳（seen_messages）に無いハッシュのメッセージだけ配信する。
+  // 稼働中・停止中に初めて現れた会話（=いま未読で送ってきた新規顧客）は末尾 bootstrapTail 件だけ配る。
+  // 0件配信で既知化すると初回メッセージが永久に失われるため（事前レビュー確定指摘 [0]）。
+  const { deliver, bootstrap } = decideDeliveryBySeen(
+    !!cust.bootstrapped,
+    inbound,
+    (h) => dbApi.hasSeen(conv.customerKey, h),
+    { bootstrapTail: cfg.bootstrapTail }
+  );
 
+  if (bootstrap) {
+    // 初遭遇: 「配信しない過去ログ」だけを先に既知化する。配信対象（deliver）を先に既知化すると、
+    // 配信途中の一時エラーで新規顧客の初回メッセージが恒久的に消える（改修検証の確定指摘）。
+    // deliver 分は下の配信ループが1件成功ごとに既知化し、途中失敗しても bootstrapped=1 済みなので
+    // 次巡回の未知差分（decideDeliveryBySeen）が残りを再配信する
+    const deliverSet = new Set(deliver.map((m) => m.hash));
+    for (const m of inbound) {
+      if (!deliverSet.has(m.hash)) dbApi.addSeen(conv.customerKey, m.hash);
+    }
+    dbApi.setSeen(conv.customerKey, inbound.length, 1);
+  }
   if (deliver.length > 0) {
-    const threadId = await ensureTopic(conv.customerKey, conv.name);
-    // 1件送るごとに既読を進める: 途中で失敗しても、送信済み分を次回に再配信しない
-    let sent = inbound.length - deliver.length;
+    // トピック名に会員IDを含めて同名顧客の取り違えを防ぐ
+    const threadId = await ensureTopic(conv.customerKey, `${conv.name}（${conv.customerKey}）`);
     for (const m of deliver) {
       try {
         await pushInbound(threadId, m.text);
@@ -104,11 +122,17 @@ async function processConversation(conv: Conversation): Promise<void> {
           throw e;
         }
       }
-      sent++;
-      dbApi.setSeen(conv.customerKey, sent, 1);
+      // 1件成功ごとに既知化: 途中で失敗しても、送信済み分を次回に再配信しない
+      dbApi.addSeen(conv.customerKey, m.hash);
     }
   }
-  if (newSeen !== null) dbApi.setSeen(conv.customerKey, newSeen, 1);
+  if (!bootstrap) {
+    // 配信対象でなかった分も含め窓内の全ハッシュを既知に保つ
+    // （プルーニング済みの古いメッセージが窓に残っていても再配信しない）
+    for (const m of inbound) dbApi.addSeen(conv.customerKey, m.hash);
+    dbApi.setSeen(conv.customerKey, inbound.length, 1);
+  }
+  dbApi.pruneSeen(conv.customerKey);
 }
 
 async function pollOnce(): Promise<void> {
@@ -158,12 +182,15 @@ async function main(): Promise<void> {
       .then(() => {
         // 会話本文はログに残さない（PM2 のログは平文でディスクに蓄積されるため）
         console.log(`→ Lpro送信 [${name}] (${text.length}字)`);
-        // 返信で会話を開くと Lpro 側の未読バッジが消え、直前ポーリング以降の新着が
-        // ONLY_UNREAD フィルタから漏れるため、この会話だけ即座に取り込み直す
-        // （runExclusive 1単位で呼ぶ: 巡回側と並走しても既読の読取〜更新が交錯しない）
+        // 返信で未返信状態が変わり、直前ポーリング以降の新着が ONLY_UNREAD フィルタから
+        // 漏れ得るため、この会話だけ即座に取り込み直す
+        // （runExclusive 1単位で呼ぶ: 巡回側と並走しても既読の読取〜更新が交錯しない。
+        //   送信操作でフレームが再読込されるとは限らないため、必ず開き直してから読む）
         if (shuttingDown) return;
-        return runExclusive(() => processConversation({ customerKey: key, name, unread: true }))
-          .catch((e) => console.error(`返信後の取り込み失敗 [${name}]:`, String(e).slice(0, 200)));
+        return runExclusive(async () => {
+          await refreshTalkView();
+          await processConversation({ customerKey: key, name, unread: true });
+        }).catch((e) => console.error(`返信後の取り込み失敗 [${name}]:`, String(e).slice(0, 200)));
       })
       .catch(async (e) => {
         console.error('送信失敗:', e);

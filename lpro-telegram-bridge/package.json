@@ -11,6 +11,7 @@
     "start": "tsx src/index.ts",
     "login": "tsx src/login.ts",
     "chatid": "tsx src/chatid.ts",
+    "dump": "tsx src/dump.ts",
     "doctor": "tsx src/doctor.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test test/logic.test.ts"

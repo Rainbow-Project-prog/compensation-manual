@@ -15,7 +15,7 @@ export const cfg = {
   onlyUnread: (process.env.ONLY_UNREAD ?? 'true') === 'true',
   headless: (process.env.HEADLESS ?? 'false') === 'true',
   userDataDir: process.env.USER_DATA_DIR ?? join(pkgRoot, '.lpro-profile'),
-  // 稼働中に初めて現れた顧客（=いま送ってきた新規顧客）の初回配信件数。
+  // 停止中・稼働中に初めて現れた顧客（=いま送ってきた新規顧客）の初回配信件数。
   // 0にすると初回は何も配らない＝初回メッセージを取りこぼすので注意。
   bootstrapTail: num('BOOTSTRAP_TAIL', 5),
 };
@@ -41,29 +41,55 @@ function num(k: string, def: number): number {
 
 /**
  * ★★★ Lpro 依存はこの SELECTORS だけ ★★★
- * トーク応対画面で F12 → 要素を調べて各セレクタを埋める。
- * UIが変わったら基本ここを直すだけで復旧できる。
+ * 2026-07-11 実機 DOM（npm run dump → dump/frame-*.html）で確定。
+ * Lpro の UI が変わったら基本ここを直すだけで復旧できる（RUNBOOK A 参照）。
+ *
+ * 画面構造（重要）:
+ *   トーク応対は「一覧クリックで開く」型ではなく、1ページに顧客ブロック（行）が
+ *   縦に並ぶインライン型。行 = プロフィール + 会話履歴（直近数件のみ表示）+ 返信欄。
+ *   実体は iframe の入れ子: /manage/（シェル）→ iframe[name="main"]（chat_message?method=frame）
+ *   → iframe[name="chatframe"]（chat_message = 顧客行のテーブル）。
+ *
+ * ⚠️ chatframe の先頭には「一括返信」フォーム（#form0 / #message0 / input#btn_send、
+ *    tr.rowitem[data-rowid="0"]）がある。誤って触ると全顧客一斉送信になるため、
+ *    すべての操作は「会員IDで特定した行」のスコープ内でのみ行うこと（lpro-adapter が保証）。
+ *
+ * ※ すべて純CSS（frame.evaluate 内の querySelectorAll / matches で使うため、
+ *    Playwright 拡張構文 :has-text() 等は使用不可）。
  */
 export const SELECTORS = {
-  // ログイン済み判定：トーク応対画面にだけ存在する要素
-  loggedInMarker: 'TODO',       // 例: '[data-testid="talk-room-list"]'
-  // 会話一覧：顧客1件分の行（複数マッチ想定）
-  conversationItem: 'TODO',     // 例: '.talk-list .talk-list-item'
-  // 会話行内：顧客名だけを含む要素（★重要★ 行全文はプレビューや未読数を含み
-  // キーが揺れて顧客1人に複数トピックができるため、名前要素を必ず特定する）
-  customerName: 'TODO',         // 例: '.talk-list-item__name'
-  // 会話行の一意ID「属性名」（セレクタではなく属性名）。あれば最優先でキーに使う
-  customerKeyAttr: 'TODO',      // 例: 'data-user-id'
-  // 会話行内：未読バッジ（存在すれば未読）
-  unreadBadge: 'TODO',          // 例: '.unread-badge'
-  // メッセージ吹き出し（会話を開いた後／複数マッチ）
-  messageBubble: 'TODO',        // 例: '.message-item'
-  // 相手(顧客)発言の吹き出しを示す目印（クラス等）
-  inboundBubbleMarker: 'TODO',  // 例: '.message-item--inbound'
-  // 吹き出し内の本文
-  bubbleText: 'TODO',           // 例: '.message-body'
-  // 返信入力欄
-  replyInput: 'TODO',           // 例: 'textarea.reply-input'
-  // 送信ボタン
-  sendButton: 'TODO',           // 例: 'button.reply-send'
+  // ── フレーム経路 ──
+  // 右コンテンツの iframe（/manage/ シェル配下）。talkUrl を直接開いた場合は不要になる
+  mainFrame: 'iframe[name="main"]',
+  // 顧客行テーブルの iframe（chat_message）
+  chatFrame: 'iframe[name="chatframe"]',
+  // /manage/ シェルでのログイン済み判定（ログアウトメニューはログイン後にだけ出る）
+  loggedInMarker: 'nav.opemenu a[href="logout"]',
+
+  // ── 顧客行（chatframe 内）──
+  // 顧客1件分の行。一括返信行（data-rowid="0"）も同じ class を持つため、
+  // 会員ID要素（memberIdText）を持つ行だけを顧客として扱う
+  conversationItem: 'tr.rowitem[data-rowid]',
+  // 行内: 会員ID（顧客キー。アカバンでも不変とヒアリング済み）
+  memberIdText: 'span[id^="member_id"]',
+  // 行内: LINE ユーザー名（表示用。キーには使わない）
+  customerName: 'mark.lineusername',
+  // 行内: 返信状態セル（縦書きで「未返信」/「返信済み」）
+  statusCell: 'td.henshin',
+  // statusCell がこの文字列を含めば未読（未返信）扱い
+  unreadText: '未返信',
+
+  // ── メッセージ（行内の会話履歴。直近数件のみ表示される点に注意）──
+  // 1メッセージ分のグループ。左=顧客(inbound) / 右=自分(outbound)
+  messageGroup: '.chat_inner > .mb_M',
+  // グループがこの class を持てば顧客の発言
+  inboundGroupClass: 'left',
+  // グループ内: 吹き出し本体（mmsg_member / mmsg_char / mmsg_char2 の総称）
+  bubble: '[class*="mmsg_"]',
+  // グループ内: 日時表示（例: 07/04<br>22:04。フィンガープリントの材料）
+  msgDatetime: '.mmsgdt',
+
+  // ── 返信（必ず行スコープで使う）──
+  replyInput: 'textarea[name="message"]',
+  sendButton: 'input.btn_send',
 };

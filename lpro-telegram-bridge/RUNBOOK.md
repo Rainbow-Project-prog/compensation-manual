@@ -16,12 +16,15 @@
 
 1. **どのセレクタが死んだか切り分ける**
    `HEADLESS=false` で `npm start` し、ブラウザで実際の画面を見る。
-   - 会話一覧が取れない → `conversationItem`
-   - **一覧は取れるのに新着が全く配信されない** → `unreadBadge`（既定の `ONLY_UNREAD=true` では
-     バッジが一度もマッチしないと全会話が未読なし扱いになり、無警告で巡回対象から外れる）
-   - 顧客1人に複数トピックができる／名前が変 → `customerName` / `customerKeyAttr`（キーが揺れている）
-   - 会話は開くがメッセージが拾えない → `messageBubble` / `inboundBubbleMarker` / `bubbleText`
-   - 返信が入らない → `replyInput` / `sendButton`
+   - 「トーク画面（chatframe）が見つかりません」が出続ける → `mainFrame` / `chatFrame`（iframe構造の変化）
+     または LPRO_TALK_URL（chat_message?method=frame）の変更
+   - 顧客行が0件 → `conversationItem`（tr.rowitem）
+   - **一覧は取れるのに新着が全く配信されない** → `statusCell` / `unreadText`（既定の `ONLY_UNREAD=true` では
+     「未返信」が一度もマッチしないと全会話が未読なし扱いになり、無警告で巡回対象から外れる）
+   - 顧客が「スキップ」され続ける → `memberIdText`（会員ID要素）
+   - 名前が変 → `customerName`
+   - メッセージが拾えない → `messageGroup` / `inboundGroupClass` / `bubble` / `msgDatetime`
+   - 返信が入らない・「送信を確認できません」→ `replyInput` / `sendButton`
    - そもそもログイン判定で止まる → `loggedInMarker`
 
 2. **新しいセレクタを調べる**
@@ -67,16 +70,18 @@ retry_after を待って再試行する）。作成失敗は次の配信サイ�
 
 ## D. 新着がダブる / 過去ログが大量に流れる / 新着が来ない
 
-- 本実装は **件数ベース**(`seen_count` を超えた分だけ配信)。append-only 前提。
-- 防御実装済み: 件数が減ったサイクルは「部分レンダリング」とみなしてスキップ(既読を下方修正しない)。
-  送信は1件ごとに既読を進めるので途中失敗でも重複しない
+- 本実装は **フィンガープリント方式**(2026-07-11 実DOM確定時に件数ベースから移行):
+  メッセージごとに「会員ID+日時+本文」のハッシュを `seen_messages` テーブル(bridge.db)に記録し、
+  **台帳に無いハッシュのメッセージだけ**配信する。Lpro の履歴窓(行内に直近数件のみ表示)が
+  どうずれても、同数入れ替わりでも、取りこぼし・再配信は起きない設計。
+- 送信は1件成功ごとに既知化するので途中失敗でも重複しない
   (例外: 4000字超の長文は分割送信されるため、分割の途中で失敗した場合のみ先頭部分が重複し得る)。
-- それでも **同数入れ替わり**(古い1件が画面から消え、新しい1件が増える)は原理的に検知できず、
-  新着を取りこぼす。Lpro 側にリスト仮想化・履歴の遅延読み込みがあるなら、メッセージの
-  **一意ID/時刻**での重複排除に切り替える: `db.ts` に `seen_messages(hash)` テーブルを足し、
-  `readInbound` で各吹き出しのIDを拾って既配信を除外する(FABLE5_HANDOFF.md 参照)。
-- 顧客1人に**トピックが複数できる**場合はキーが揺れている → `customerKeyAttr` / `customerName` を確認(A-1)。
-- 配信判定そのものは `src/logic.ts`(`decideDelivery`)に分離済み。挙動を変えるときは
+- それでもダブる場合: 同一顧客で **日時表示や本文の描画が変わる**とハッシュが変わる。
+  `.mmsgdt` の中身が変化していないか(A-1 の `msgDatetime`)を確認。
+- 新着が来ない場合: `statusCell`/`unreadText`(未返信判定)を確認。`ONLY_UNREAD=false` にすると
+  全行を毎回読むので、未返信判定が壊れていても届くようになる(重い・既読台帳があるので安全)。
+- 顧客1人に**トピックが複数できる**ことは起きない設計(キー=会員ID固定)。起きたら `memberIdText` を確認。
+- 配信判定そのものは `src/logic.ts`(`decideDeliveryBySeen`)に分離済み。挙動を変えるときは
   まず `test/logic.test.ts` にケースを足してから直すと安全。
 
 ---

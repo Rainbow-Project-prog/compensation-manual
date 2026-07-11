@@ -5,3 +5,4 @@ bridge.db
 bridge.db-wal
 bridge.db-shm
 *.log
+dump/

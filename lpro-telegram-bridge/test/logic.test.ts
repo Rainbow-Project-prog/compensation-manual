@@ -1,86 +1,85 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { decideDelivery } from '../src/logic.js';
+import { decideDeliveryBySeen, type FpMsg } from '../src/logic.js';
 
-const msgs = (n: number) => Array.from({ length: n }, (_, i) => ({ text: `m${i}` }));
+const msg = (h: string): FpMsg => ({ text: `本文${h}`, hash: h });
+const msgs = (...hs: string[]) => hs.map(msg);
+const seenSet = (...hs: string[]) => {
+  const s = new Set(hs);
+  return (h: string) => s.has(h);
+};
 
 // --- 初回ブートストラップ ---
 
-test('初回(tail=0/未指定)は配信ゼロ・既読を現在件数に設定', () => {
-  const d = decideDelivery({ bootstrapped: 0, seen_count: 0 }, msgs(5));
+test('初回(tail=0/未指定)は配信ゼロ', () => {
+  const d = decideDeliveryBySeen(false, msgs('a', 'b', 'c'), seenSet());
   assert.equal(d.bootstrap, true);
   assert.deepEqual(d.deliver, []);
-  assert.equal(d.newSeen, 5);
 });
 
-test('初回で履歴ゼロでも既読0として確定する', () => {
-  const d = decideDelivery({ bootstrapped: 0, seen_count: 0 }, msgs(0));
+test('初回 tail=5: 末尾5件だけ配る', () => {
+  const d = decideDeliveryBySeen(false, msgs('a', 'b', 'c', 'd', 'e', 'f', 'g'), seenSet(), { bootstrapTail: 5 });
   assert.equal(d.bootstrap, true);
-  assert.deepEqual(d.deliver, []);
-  assert.equal(d.newSeen, 0);
-});
-
-test('初回 tail=5: 末尾5件だけ配って既読は全件に', () => {
-  const d = decideDelivery({ bootstrapped: 0, seen_count: 0 }, msgs(12), { bootstrapTail: 5 });
-  assert.equal(d.bootstrap, true);
-  assert.deepEqual(d.deliver.map((m) => m.text), ['m7', 'm8', 'm9', 'm10', 'm11']);
-  assert.equal(d.newSeen, 12);
+  assert.deepEqual(d.deliver.map((m) => m.hash), ['c', 'd', 'e', 'f', 'g']);
 });
 
 test('初回 tail=5 で履歴3件なら全件配る', () => {
-  const d = decideDelivery({ bootstrapped: 0, seen_count: 0 }, msgs(3), { bootstrapTail: 5 });
-  assert.deepEqual(d.deliver.map((m) => m.text), ['m0', 'm1', 'm2']);
-  assert.equal(d.newSeen, 3);
+  const d = decideDeliveryBySeen(false, msgs('a', 'b', 'c'), seenSet(), { bootstrapTail: 5 });
+  assert.deepEqual(d.deliver.map((m) => m.hash), ['a', 'b', 'c']);
 });
 
 test('初回 tail が負数でも安全（配信ゼロ扱い）', () => {
-  const d = decideDelivery({ bootstrapped: 0, seen_count: 0 }, msgs(4), { bootstrapTail: -1 });
+  const d = decideDeliveryBySeen(false, msgs('a', 'b'), seenSet(), { bootstrapTail: -1 });
   assert.deepEqual(d.deliver, []);
-  assert.equal(d.newSeen, 4);
 });
 
-// --- 2回目以降 ---
+test('初回で履歴ゼロでも壊れない', () => {
+  const d = decideDeliveryBySeen(false, [], seenSet(), { bootstrapTail: 5 });
+  assert.equal(d.bootstrap, true);
+  assert.deepEqual(d.deliver, []);
+});
 
-test('既読を超えた分だけ配信し、既読を更新', () => {
-  const d = decideDelivery({ bootstrapped: 1, seen_count: 3 }, msgs(5));
+// --- 2回目以降（フィンガープリント差分） ---
+
+test('全て既知なら配信しない', () => {
+  const d = decideDeliveryBySeen(true, msgs('a', 'b', 'c'), seenSet('a', 'b', 'c'));
   assert.equal(d.bootstrap, false);
-  assert.deepEqual(d.deliver.map((m) => m.text), ['m3', 'm4']);
-  assert.equal(d.newSeen, 5);
-});
-
-test('新着なし(件数同じ)なら配信も既読更新もしない', () => {
-  const d = decideDelivery({ bootstrapped: 1, seen_count: 4 }, msgs(4));
   assert.deepEqual(d.deliver, []);
-  assert.equal(d.newSeen, null);
 });
 
-test('1件だけ新着が来たケース', () => {
-  const d = decideDelivery({ bootstrapped: 1, seen_count: 10 }, msgs(11));
-  assert.deepEqual(d.deliver.map((m) => m.text), ['m10']);
-  assert.equal(d.newSeen, 11);
+test('末尾の未知分だけを表示順のまま配信', () => {
+  const d = decideDeliveryBySeen(true, msgs('a', 'b', 'c', 'd'), seenSet('a', 'b'));
+  assert.deepEqual(d.deliver.map((m) => m.hash), ['c', 'd']);
 });
 
-// --- 部分レンダリング防御（既読の下方修正はしない） ---
+test('★同数入れ替わり（旧1件が窓から消え新1件が入る）でも新着を検知する', () => {
+  // 件数ベース方式の原理的欠陥 [22] の回帰テスト:
+  // 窓 [a,b,c] (3件・既知) → 窓 [b,c,d] (3件・同数) — d を取りこぼしてはならない
+  const d = decideDeliveryBySeen(true, msgs('b', 'c', 'd'), seenSet('a', 'b', 'c'));
+  assert.deepEqual(d.deliver.map((m) => m.hash), ['d']);
+});
 
-test('件数が減ったサイクルは部分レンダリング扱い: 配信も既読補正もしない', () => {
-  const d = decideDelivery({ bootstrapped: 1, seen_count: 50 }, msgs(20));
+test('窓が縮んでも（部分描画）既知分の再配信をしない', () => {
+  // 窓 [a,b,c,d,e] 既知 → 部分描画で [c,d] しか見えないサイクル → 配信ゼロ
+  const d = decideDeliveryBySeen(true, msgs('c', 'd'), seenSet('a', 'b', 'c', 'd', 'e'));
   assert.deepEqual(d.deliver, []);
-  assert.equal(d.newSeen, null);
 });
 
-test('縮小→同数まで復帰しても旧メッセージを再配信しない', () => {
-  // 50件既読 → 部分レンダリングで20件（スキップ）→ 復帰して50件
-  const dip = decideDelivery({ bootstrapped: 1, seen_count: 50 }, msgs(20));
-  assert.equal(dip.newSeen, null); // 既読は50のまま
-  const recovered = decideDelivery({ bootstrapped: 1, seen_count: 50 }, msgs(50));
-  assert.deepEqual(recovered.deliver, []); // 再配信ゼロ
-  assert.equal(recovered.newSeen, null);
+test('縮小→復帰しても再配信ゼロ・新着だけ配信', () => {
+  const seen = seenSet('a', 'b', 'c', 'd', 'e');
+  const dip = decideDeliveryBySeen(true, msgs('c', 'd'), seen);
+  assert.deepEqual(dip.deliver, []);
+  const recovered = decideDeliveryBySeen(true, msgs('b', 'c', 'd', 'e', 'f'), seen);
+  assert.deepEqual(recovered.deliver.map((m) => m.hash), ['f']);
 });
 
-test('縮小→復帰して新着があれば新着分だけ配信', () => {
-  const dip = decideDelivery({ bootstrapped: 1, seen_count: 50 }, msgs(20));
-  assert.equal(dip.newSeen, null);
-  const recovered = decideDelivery({ bootstrapped: 1, seen_count: 50 }, msgs(52));
-  assert.deepEqual(recovered.deliver.map((m) => m.text), ['m50', 'm51']);
-  assert.equal(recovered.newSeen, 52);
+test('同一本文・同一日時の連投はハッシュ連番で別メッセージとして届く', () => {
+  // adapter は同一(日時,本文)の2件目に ":1" を付ける → 未知として配信される
+  const d = decideDeliveryBySeen(true, msgs('x', 'x:1'), seenSet('x'));
+  assert.deepEqual(d.deliver.map((m) => m.hash), ['x:1']);
+});
+
+test('順序は入力の表示順を維持する', () => {
+  const d = decideDeliveryBySeen(true, msgs('n1', 'k', 'n2'), seenSet('k'));
+  assert.deepEqual(d.deliver.map((m) => m.hash), ['n1', 'n2']);
 });

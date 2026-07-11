@@ -20,6 +20,14 @@ CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+-- 配信済み/既知メッセージのフィンガープリント（会員ID+日時+本文のハッシュ）。
+-- Lpro の履歴窓がずれても再配信・取りこぼしをしないための台帳
+CREATE TABLE IF NOT EXISTS seen_messages (
+  customer_key TEXT NOT NULL,
+  hash         TEXT NOT NULL,
+  created_at   INTEGER NOT NULL,
+  PRIMARY KEY (customer_key, hash)
+);
 `);
 
 export type Customer = {
@@ -61,6 +69,19 @@ export const dbApi = {
        ON CONFLICT(key) DO UPDATE SET value=excluded.value`
     ).run(key, value),
   clearAllTopics: () => db.prepare('UPDATE customers SET topic_thread_id=NULL').run(),
+  // ── フィンガープリント台帳 ──
+  hasSeen: (key: string, hash: string) =>
+    db.prepare('SELECT 1 FROM seen_messages WHERE customer_key=? AND hash=?').get(key, hash) !== undefined,
+  addSeen: (key: string, hash: string) =>
+    db.prepare(
+      'INSERT OR IGNORE INTO seen_messages (customer_key, hash, created_at) VALUES (?,?,?)'
+    ).run(key, hash, Date.now()),
+  // 顧客ごとに直近 keep 件だけ残す（履歴窓は数件なので300もあれば十分。肥大防止）
+  pruneSeen: (key: string, keep = 300) =>
+    db.prepare(
+      `DELETE FROM seen_messages WHERE customer_key=? AND hash NOT IN (
+         SELECT hash FROM seen_messages WHERE customer_key=? ORDER BY created_at DESC, rowid DESC LIMIT ?)`
+    ).run(key, key, keep),
 };
 
 /** 終了時に呼ぶ。WAL を確定してファイルを閉じる */

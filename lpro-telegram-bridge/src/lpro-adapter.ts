@@ -1,8 +1,10 @@
-import { chromium, type BrowserContext, type Page } from 'playwright';
+import { chromium, type BrowserContext, type Page, type Frame, type Locator } from 'playwright';
+import { createHash } from 'node:crypto';
 import { cfg, SELECTORS } from './config.js';
 
 export type Conversation = { customerKey: string; name: string; unread: boolean };
-export type InboundMsg = { text: string };
+/** hash はフィンガープリント（会員ID+日時+本文+同文連番）。重複配信・取りこぼし防止の要 */
+export type InboundMsg = { text: string; hash: string };
 
 let ctx: BrowserContext | null = null;
 let page: Page | null = null;
@@ -23,7 +25,7 @@ export async function initBrowser(): Promise<void> {
   if (ctx) await closeBrowser();
   ctx = await chromium.launchPersistentContext(cfg.userDataDir, {
     headless: cfg.headless,
-    viewport: { width: 1280, height: 900 },
+    viewport: { width: 1400, height: 950 },
     // Ctrl+C / kill の終了処理は index.ts の shutdown() が担う。Playwright 既定のシグナルハンドラは
     // ブラウザを閉じた直後に process.exit してしまい、返信の排水・bot停止・DBクローズを先取りで打ち切る
     // （プロセス終了時の chromium の後始末は Playwright の exit ハンドラが引き続き行う）
@@ -53,21 +55,52 @@ export function pageGone(): boolean {
   return !page || page.isClosed();
 }
 
-export async function ensureLoggedIn(): Promise<void> {
-  if (SELECTORS.loggedInMarker === 'TODO') {
-    throw new Error(
-      'SELECTORS.loggedInMarker が未設定です。先に Lpro のトーク応対画面を F12 で調べて ' +
-      'src/config.ts の SELECTORS を埋めてください（npm run doctor で確認できます）'
-    );
+/**
+ * 顧客行テーブルの iframe（chatframe）を探す。
+ * talkUrl を直接開いた場合（chat_message?method=frame）は1段、
+ * /manage/ シェル経由なら main → chatframe の2段になるが、
+ * Playwright の frames() はフラットに列挙するので name で拾えばどちらでも動く。
+ */
+function findChatFrame(): Frame | null {
+  const p = page;
+  if (!p || p.isClosed()) return null;
+  for (const f of p.frames()) {
+    if (f.name() === 'chatframe' || /\/chat_message(?:\?(?!.*method=frame)|$)/.test(f.url())) return f;
   }
+  return null;
+}
+
+async function waitForChatFrame(timeoutMs: number): Promise<Frame | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const f = findChatFrame();
+    if (f) {
+      // フレームは在っても中身が空のことがあるので、行テーブルの出現まで確認する
+      const ok = await f
+        .waitForSelector(SELECTORS.conversationItem, { timeout: Math.max(1000, deadline - Date.now()), state: 'attached' })
+        .then(() => true)
+        .catch(() => false);
+      if (ok) return f;
+      return findChatFrame(); // 行ゼロでもフレームがあれば返す（空一覧は呼び出し側で扱う）
+    }
+    await page!.waitForTimeout(500);
+  }
+  return null;
+}
+
+/** chatframe を必須で取得。無ければセッション切れ/未ログインとして throw（復旧経路へ） */
+function requireChatFrame(): Frame {
+  const f = findChatFrame();
+  if (!f) throw new Error('トーク画面（chatframe）が見つかりません（セッション切れ/画面遷移の疑い）');
+  return f;
+}
+
+export async function ensureLoggedIn(): Promise<void> {
   const p = page!;
   await p.goto(cfg.talkUrl, { waitUntil: 'domcontentloaded' });
-  // 一発チェックだと JS レンダリングの遅延だけでログイン済みを「未ログイン」と誤判定するため、
-  // マーカーの出現を一定時間待ってから判断する
-  const ok = await p.waitForSelector(SELECTORS.loggedInMarker, { timeout: 15_000, state: 'visible' })
-    .then(() => true)
-    .catch(() => false);
-  if (!ok) {
+  // トーク画面が出ればログイン済み。未ログインならログインページへリダイレクトされ chatframe は現れない
+  let f = await waitForChatFrame(15_000);
+  if (!f) {
     if (cfg.headless) {
       throw new Error(
         '未ログインですが HEADLESS=true のため手動ログインできません。' +
@@ -76,189 +109,226 @@ export async function ensureLoggedIn(): Promise<void> {
     }
     console.log('未ログインの可能性。表示中のブラウザでログイン（2FA含む）してください。最大5分待機…');
     await p.goto(cfg.loginUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
-    await p.waitForSelector(SELECTORS.loggedInMarker, { timeout: 300_000 });
-  }
-  console.log('Lpro ログイン確認OK');
-}
-
-/** 会話行から顧客キーと表示名を取り出す（キーの安定性が命） */
-async function extractIdentity(
-  item: ReturnType<Page['locator']>,
-  index: number
-): Promise<{ customerKey: string; name: string } | null> {
-  let customerKey = '';
-  if (SELECTORS.customerKeyAttr !== 'TODO') {
-    customerKey = clean(await item.getAttribute(SELECTORS.customerKeyAttr));
-    if (!customerKey) {
-      // キー属性が取れない行を名前キーにフォールバックすると、openConversation は属性照合しか
-      // しないため「永久に開けない顧客」が生まれる。取り違え防止のため行ごとスキップする
-      warnOnce(
-        'key-attr-missing',
-        `⚠️ customerKeyAttr("${SELECTORS.customerKeyAttr}") の属性値が取れない会話行があります。` +
-        '取り違え防止のためスキップします（属性名が正しいか確認してください）。'
-      );
-      return null;
+    // ログイン完了はシェルのログアウトメニュー（loggedInMarker）またはトーク画面の出現で判定
+    const deadline = Date.now() + 300_000;
+    let ok = false;
+    while (Date.now() < deadline && !ok) {
+      ok =
+        (await p.locator(SELECTORS.loggedInMarker).first().isVisible().catch(() => false)) ||
+        findChatFrame() !== null;
+      if (!ok) await p.waitForTimeout(2000);
     }
+    if (!ok) throw new Error('5分以内にログインを確認できませんでした');
+    await p.goto(cfg.talkUrl, { waitUntil: 'domcontentloaded' });
+    f = await waitForChatFrame(30_000);
+    if (!f) throw new Error('ログイン後もトーク画面（chatframe）を表示できませんでした');
   }
-  let name = '';
-  if (SELECTORS.customerName !== 'TODO') {
-    // トピック名は Telegram の128字上限があるため名前経由でも60字に切り詰める
-    name = clean(await item.locator(SELECTORS.customerName).first().textContent().catch(() => '')).slice(0, 60);
-  }
-  if (!name) {
-    // フォールバック: 行全文。プレビューや未読数を含むため名前としては不安定
-    name = clean(await item.textContent()).slice(0, 60);
-    warnOnce(
-      'name-fallback',
-      '⚠️ customerName セレクタ未設定のため行全文から名前を代用中。プレビュー変化で名前が揺れ、' +
-      '返信先の特定に失敗する危険があります。config.ts の SELECTORS.customerName を設定してください。'
-    );
-  }
-  if (!customerKey) {
-    customerKey = name;
-    warnOnce(
-      'key-fallback',
-      '⚠️ customerKeyAttr 未設定のため表示名を顧客キーに使用中。同名衝突・キー揺れで' +
-      '顧客1人に複数トピックができる危険があります。一意属性があれば必ず設定してください。'
-    );
-  }
-  if (!customerKey) {
-    console.warn(`会話行 ${index}: 顧客キーを特定できないためスキップします`);
-    return null;
-  }
-  return { customerKey, name };
+  console.log('Lpro ログイン確認OK（トーク画面表示）');
 }
 
-/** 会話一覧を取得 */
+/** 行スキャン結果（frame.evaluate で一括抽出する軽量DTO） */
+type RowScan = { key: string; name: string; status: string };
+
+let lastLoggedCounts = '';
+
+/**
+ * 会話（顧客行）一覧を取得。毎回 talkUrl を開き直して最新の描画を読む。
+ * 一括返信行（会員ID無し）はここで除外される。
+ */
 export async function pollConversations(): Promise<Conversation[]> {
   const p = page!;
   await p.goto(cfg.talkUrl, { waitUntil: 'domcontentloaded' });
-  // セッション切れの典型形は「ログイン画面へリダイレクトされる」。ログイン画面が偶然
-  // conversationItem にマッチする行を描画しても誤読しないよう、一覧を読む前に毎回
-  // ログイン済みマーカーを検証し、見えなければエラーにして復旧経路（ensureLoggedIn）へ回す
-  const loggedIn = await p.waitForSelector(SELECTORS.loggedInMarker, { timeout: 15_000, state: 'visible' })
-    .then(() => true)
-    .catch(() => false);
-  if (!loggedIn) {
-    throw new Error('ログイン済みマーカーが見えません（セッション切れの疑い）');
+  const f = await waitForChatFrame(20_000);
+  if (!f) {
+    throw new Error('トーク画面（chatframe）が表示されません（セッション切れの疑い）');
   }
-  await p.waitForSelector(SELECTORS.conversationItem, { timeout: 15_000 }).catch(() => {});
-  const items = p.locator(SELECTORS.conversationItem);
-  const n = await items.count();
-  if (n === 0) {
-    warnOnce('empty-list', '会話一覧が0件です。conversationItem セレクタが正しいか確認してください。');
+  const rows: RowScan[] = await f.evaluate(
+    (S) => {
+      const out: Array<{ key: string; name: string; status: string }> = [];
+      for (const row of document.querySelectorAll(S.conversationItem)) {
+        const idEl = row.querySelector(S.memberIdText);
+        const key = (idEl?.textContent ?? '').trim();
+        if (!key) continue; // 一括返信行・会員ID欠落行はスキップ（誤爆防止）
+        const name = (row.querySelector(S.customerName)?.textContent ?? '').trim().replace(/\s+/g, ' ').slice(0, 60);
+        const status = (row.querySelector(S.statusCell)?.textContent ?? '').trim();
+        out.push({ key, name, status });
+      }
+      return out;
+    },
+    {
+      conversationItem: SELECTORS.conversationItem,
+      memberIdText: SELECTORS.memberIdText,
+      customerName: SELECTORS.customerName,
+      statusCell: SELECTORS.statusCell,
+    }
+  );
+  if (rows.length === 0) {
+    warnOnce('empty-list', '顧客行が0件です。conversationItem セレクタと表示フィルタを確認してください。');
   }
-  const out: Conversation[] = [];
-  for (let i = 0; i < n; i++) {
-    const item = items.nth(i);
-    const id = await extractIdentity(item, i);
-    if (!id) continue;
-    const unread = (await item.locator(SELECTORS.unreadBadge).count()) > 0;
-    out.push({ customerKey: id.customerKey, name: id.name, unread });
+  const out = rows.map((r) => {
+    // 未読判定は安全側に倒す: 「未返信」を含む、または「返信済」を含まない未知の状態は未読扱い
+    // （dump 時点では全行「返信済み」で未返信の実表記が未検証のため。誤判定しても
+    //   フィンガープリント台帳があるので重複配信にはならず、読み込みが増えるだけ）
+    const unread =
+      r.status === ''
+        ? true
+        : r.status.includes(SELECTORS.unreadText) || !r.status.includes('返信済');
+    if (r.status === '') {
+      warnOnce('empty-status', '返信状態セル（statusCell）が空の行があります。安全のため未読扱いにします。');
+    }
+    return { customerKey: r.key, name: r.name || `ID:${r.key}`, unread };
+  });
+  // 未読0件が続く無音障害を観測できるよう、件数が変わった時だけログに出す
+  const counts = `${out.length}行/未読${out.filter((o) => o.unread).length}件`;
+  if (counts !== lastLoggedCounts) {
+    lastLoggedCounts = counts;
+    console.log(`巡回: ${counts}`);
   }
   return out;
 }
 
-/** 会話を開いて相手(顧客)の発言だけを順番に取得。開けない/読めない場合は throw する */
-export async function readInbound(conv: Conversation): Promise<InboundMsg[]> {
+/** トーク画面を開き直して最新の描画にする（返信後の即時取り込み等、goto を伴わない読み取りの前に呼ぶ） */
+export async function refreshTalkView(): Promise<void> {
   const p = page!;
-  await openConversation(conv);
-  const bubbles = p.locator(SELECTORS.messageBubble);
-  // openConversation の waitForSelector は最初の1吹き出しで resolve するため、
-  // レンダリング途中の過小カウントを既読基準にしないよう件数が安定するまで待つ
-  // （安定済みの通常ケースは150msで抜ける。不安定な間だけ300ms間隔で最大約3秒）
-  let n = await bubbles.count();
-  for (let i = 0; i < 10; i++) {
-    await p.waitForTimeout(i === 0 ? 150 : 300);
-    const m = await bubbles.count();
-    if (m === n) break;
-    n = m;
+  await p.goto(cfg.talkUrl, { waitUntil: 'domcontentloaded' });
+  const f = await waitForChatFrame(20_000);
+  if (!f) throw new Error('トーク画面（chatframe）が表示されません（セッション切れの疑い）');
+}
+
+/**
+ * 会員IDで顧客行を特定する（★誤配信防止の要★）。
+ * 行スコープの Locator を返す前に、行内の会員ID表示が要求キーと完全一致することを検証する。
+ * 見つからない場合は throw（現在の表示（最新100件）に含まれない顧客には送れない）。
+ */
+async function findRow(f: Frame, customerKey: string): Promise<Locator> {
+  const row = f
+    .locator(SELECTORS.conversationItem)
+    .filter({ has: f.locator(SELECTORS.memberIdText).getByText(customerKey, { exact: true }) });
+  const n = await row.count();
+  if (n === 0) {
+    throw new Error(
+      `顧客行が見つかりません（会員ID=${customerKey}）。表示中の一覧（最新100件）に含まれていない可能性があります。` +
+      'Lpro の画面から直接返信してください。'
+    );
   }
-  const res: InboundMsg[] = [];
-  for (let i = 0; i < n; i++) {
-    const b = bubbles.nth(i);
-    // 目印がバブル内部（子孫）にあるか、バブル自身のクラス等かの両対応
-    let isInbound = (await b.locator(SELECTORS.inboundBubbleMarker).count()) > 0;
-    if (!isInbound) {
-      const self = await b
-        .evaluate((el, sel) => {
-          try { return (el as Element).matches(sel); } catch { return null; }
-        }, SELECTORS.inboundBubbleMarker)
-        .catch(() => null);
-      if (self === null) {
-        warnOnce(
-          'marker-not-css',
-          '⚠️ inboundBubbleMarker がバブル自身の判定（Element.matches）に使えないセレクタです。' +
-          '純粋なCSS（クラス等）を推奨します。現在は子孫マッチのみで判定しています。'
-        );
+  if (n > 1) {
+    // 会員IDは一意のはず。万一複数一致したら誤配信リスクなので送らない
+    throw new Error(`会員ID=${customerKey} に一致する行が複数（${n}件）あります。安全のため操作を中止しました`);
+  }
+  const shown = clean(await row.locator(SELECTORS.memberIdText).first().textContent());
+  if (shown !== customerKey) {
+    throw new Error(`行の同一性検証に失敗（要求=${customerKey} 表示=${shown}）。安全のため操作を中止しました`);
+  }
+  return row;
+}
+
+/** メッセージ抽出DTO */
+type MsgScan = { inbound: boolean; text: string; dt: string; hasImage: boolean };
+
+/**
+ * 顧客行の会話履歴から「顧客の発言」をフィンガープリント付きで取得。
+ * 表示されるのは直近数件のみ（履歴の窓）だが、新着は必ず窓の末尾に現れるため
+ * ハッシュの未見分だけを配信すれば取りこぼし・重複配信は起きない。
+ */
+export async function readInbound(conv: Conversation): Promise<InboundMsg[]> {
+  const f = requireChatFrame();
+  const row = await findRow(f, conv.customerKey);
+  const scans: MsgScan[] = await row.evaluate(
+    (rowEl, S) => {
+      const out: Array<{ inbound: boolean; text: string; dt: string; hasImage: boolean }> = [];
+      for (const g of rowEl.querySelectorAll(S.messageGroup)) {
+        const inbound = g.classList.contains(S.inboundGroupClass);
+        const bubble = g.querySelector(S.bubble);
+        if (!bubble) continue;
+        const text = (bubble.textContent ?? '').trim().replace(/\s+/g, ' ');
+        const dt = Array.from(g.querySelectorAll(S.msgDatetime))
+          .map((d) => (d.textContent ?? '').trim().replace(/\s+/g, ' '))
+          .join(' ')
+          .trim();
+        const hasImage = bubble.querySelector('img') !== null;
+        out.push({ inbound, text, dt, hasImage });
       }
-      isInbound = self === true;
+      return out;
+    },
+    {
+      messageGroup: SELECTORS.messageGroup,
+      inboundGroupClass: SELECTORS.inboundGroupClass,
+      bubble: SELECTORS.bubble,
+      msgDatetime: SELECTORS.msgDatetime,
     }
-    if (!isInbound) continue;
-    const text = clean(await b.locator(SELECTORS.bubbleText).first().textContent().catch(() => ''));
-    if (text) res.push({ text });
+  );
+
+  const res: InboundMsg[] = [];
+  const dupCount = new Map<string, number>();
+  // ★実DOMは新→旧（最新が先頭）で並ぶ（dump全100行で確認）。時系列昇順（古→新）に
+  // 直してから処理する。logic.ts の「新着は末尾」前提・Telegram への配信順・
+  // 同文連番の付与順は、すべてこの向きに依存する
+  for (const m of [...scans].reverse()) {
+    if (!m.inbound) continue;
+    // スタンプ・画像のみのメッセージも「来たこと」は伝える（無音で消すと顧客の連絡自体に気付けない）
+    const text = m.text || (m.hasImage ? '[画像/スタンプ]（本文なし。Lproで確認してください）' : '');
+    if (!text) continue;
+    const base = createHash('sha1')
+      .update(`${conv.customerKey}|${m.dt}|${text}`)
+      .digest('hex');
+    // 同一日時・同一本文の連投を別メッセージとして扱うための連番（時系列昇順で付与）。
+    // 既知の限界: 同分・同文の連投が表示窓のズレで分断されると連番が繰り上がって
+    // 既知ハッシュと衝突し、後発分が届かないことがある（稀な連投に限る抑止方向の誤り）
+    const n = dupCount.get(base) ?? 0;
+    dupCount.set(base, n + 1);
+    res.push({ text, hash: n === 0 ? base : `${base}:${n}` });
   }
   return res;
 }
 
-/** 返信を送信 */
-export async function sendReply(customerKey: string, name: string, text: string): Promise<void> {
-  const p = page!;
-  await openConversation({ customerKey, name, unread: false });
-  await p.locator(SELECTORS.replyInput).first().fill(text);
-  await p.locator(SELECTORS.sendButton).first().click();
-  // TODO(DOM確定後): 送信成功の検証を入れる（入力欄が空になった／自分の吹き出しが増えた等）。
-  // 現状は固定待ちのみで、送信失敗を検知できない。
-  await p.waitForTimeout(800);
-}
-
 /**
- * 会話を開く。キー属性 > 名前要素の完全一致 > 行全文の部分一致 の順で照合し、
- * 見つからなければ throw（握りつぶすと「空の履歴」扱いになり誤動作するため）。
- * ※ 直接URLで開ける場合（例: `${cfg.talkUrl}?user=...`）はそちらが確実。DOM確定時に差し替える。
+ * 返信を送信し、成功を検証する。
+ * - 行は会員IDで特定し（findRow が同一性検証済み）、入力・クリックはその行スコープのみ。
+ *   ページ先頭の「一括返信」フォームには構造上届かない。
+ * - 送信成功の検証: クリック後に「入力欄が空になる」か「自分側の吹き出しが1つ増える」の
+ *   いずれかを最大10秒待つ。確認できなければ throw（呼び出し側が⚠️通知を出す）。
  */
-async function openConversation(conv: Conversation): Promise<void> {
+export async function sendReply(customerKey: string, _name: string, text: string): Promise<void> {
   const p = page!;
-  await p.waitForSelector(SELECTORS.conversationItem, { timeout: 15_000 });
-  const items = p.locator(SELECTORS.conversationItem);
-  const n = await items.count();
-  let clicked = false;
+  const f = requireChatFrame();
+  const row = await findRow(f, customerKey);
+  const input = row.locator(SELECTORS.replyInput).first();
+  await input.fill(text);
 
-  if (SELECTORS.customerKeyAttr !== 'TODO') {
-    for (let i = 0; i < n && !clicked; i++) {
-      const item = items.nth(i);
-      if (clean(await item.getAttribute(SELECTORS.customerKeyAttr)) === conv.customerKey) {
-        await item.click();
-        clicked = true;
+  const outboundGroups = row.locator(`${SELECTORS.messageGroup}:not(.${SELECTORS.inboundGroupClass})`);
+  const rightBefore = await outboundGroups.count();
+  // 第3の成功シグナル用: 「送った本文を含む自分側吹き出し」の出現数を送信前後で比較する
+  const probe = clean(text).slice(0, 30);
+  const probeBefore = probe ? await outboundGroups.filter({ hasText: probe }).count().catch(() => 0) : 0;
+
+  // 送信ボタンが confirm ダイアログを出す実装だった場合に備える（出なければ何もしない）
+  const onDialog = (d: import('playwright').Dialog) => { void d.accept().catch(() => {}); };
+  p.once('dialog', onDialog);
+  try {
+    await row.locator(SELECTORS.sendButton).first().click();
+
+    // 成功シグナル3種のいずれかを最大10秒待つ:
+    // (1) 入力欄が空になった (2) 自分側吹き出しの数が増えた (3) 送った本文を含む自分側吹き出しが増えた
+    // ※ 送信ハンドラ（js/mailbox.js）の実挙動は静的DOMから確定できないため、
+    //   初回の実機送信テストで「どのシグナルで成功判定されたか」をログで確認すること
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      const cleared = (await input.inputValue().catch(() => text)) === '';
+      const rightNow = await outboundGroups.count().catch(() => rightBefore);
+      const probeNow = probe ? await outboundGroups.filter({ hasText: probe }).count().catch(() => probeBefore) : probeBefore;
+      if (cleared || rightNow > rightBefore || probeNow > probeBefore) {
+        console.log(
+          `送信確認OK（シグナル: ${cleared ? '入力欄クリア' : rightNow > rightBefore ? '吹き出し増加' : '本文一致'}）`
+        );
+        return;
       }
+      await p.waitForTimeout(500);
     }
-  } else if (SELECTORS.customerName !== 'TODO') {
-    for (let i = 0; i < n && !clicked; i++) {
-      const item = items.nth(i);
-      // extractIdentity 側の60字切り詰めと揃える（不一致だと長い名前の会話が永久に開けない）
-      const nm = clean(await item.locator(SELECTORS.customerName).first().textContent().catch(() => '')).slice(0, 60);
-      if (nm === conv.name) {
-        await item.click();
-        clicked = true;
-      }
-    }
-  } else {
-    // 最終フォールバック: 部分一致（プレビュー変化で外れたり別行に当たる危険あり）
-    warnOnce(
-      'open-fallback',
-      '⚠️ 会話の特定を行全文の部分一致で行っています。取り違えの危険があるため ' +
-      'customerKeyAttr か customerName を設定してください。'
+    throw new Error(
+      '送信を確認できませんでした（入力欄が残ったまま/送信済み吹き出しが増えない）。' +
+      '⚠️ 実際には送信されている可能性もあります。再送する前に必ず Lpro の画面で確認してください'
     );
-    const hit = items.filter({ hasText: conv.name }).first();
-    if ((await hit.count()) > 0) {
-      await hit.click();
-      clicked = true;
-    }
+  } finally {
+    p.off('dialog', onDialog);
   }
-
-  if (!clicked) {
-    throw new Error(`会話が見つかりません: ${conv.name}（key=${conv.customerKey}）`);
-  }
-  // ここで失敗したら throw させる（黙って空配列を返すと既読管理が壊れる）
-  await p.waitForSelector(SELECTORS.messageBubble, { timeout: 10_000 });
 }

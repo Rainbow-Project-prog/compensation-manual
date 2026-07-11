@@ -1,45 +1,38 @@
 /**
  * 新着配信の判定ロジック（Lpro/Telegram に依存しない純関数）。
- * index.ts のループから切り出してテスト可能にしている。
  *
- * - bootstrapped=0（初回）:
- *     opts.bootstrapTail = 0 … 何も配らず現在件数を既読として記録（起動時の一括ブートストラップ用。
- *                              過去ログのスパム防止）
- *     opts.bootstrapTail = K … 末尾K件だけ配って既読を確定（稼働中に初めて現れた=いま送ってきた
- *                              顧客の初回メッセージを取りこぼさないため）
- * - bootstrapped=1（2回目以降）: seen_count を超えた分だけ配信。
- * - inbound.length < seen_count のとき: 部分レンダリング（仮想化・読み込み失敗）とみなし、
- *   このサイクルは配信も既読補正もしない。既読を下方修正すると、次の正常サイクルで
- *   旧メッセージを大量再配信してしまうため（事前レビュー確定指摘）。
+ * 2026-07-11 実機DOM確定に伴い、件数ベース（seen_count 比較）から
+ * ★フィンガープリント方式★（メッセージごとのハッシュ既知判定）へ移行した。
+ * - Lpro の会話履歴は行内に「直近数件」しか表示されない（窓）ため、件数比較は
+ *   「同数入れ替わり」で新着を取りこぼす原理的欠陥があった（事前レビュー [1][22]）。
+ * - ハッシュ（会員ID+日時+本文+同文連番。lpro-adapter が生成）の未知分だけを配信する
+ *   方式なら、窓がどれだけずれても「新着は必ず窓の末尾に現れる」性質だけで正しく動く。
  *
- * 既知の限界: 件数ベースのため「同じ間隔で1件消えて1件増えた」等の同数入れ替わりは検知できない。
- * Lpro のメッセージ要素に一意IDがあればフィンガープリント方式に移行する（FABLE5_HANDOFF.md 参照）。
+ * - bootstrapped=false（初遭遇）: 窓内の全メッセージを既知化する前提で、
+ *   末尾 bootstrapTail 件だけ配信対象にする（0なら配らない。起動時一括ブートストラップ用）。
+ * - bootstrapped=true: 未知ハッシュのメッセージだけを表示順のまま配信対象にする。
+ *
+ * 既知化（addSeen）のタイミングは呼び出し側（index.ts）の責務:
+ * 配信1件成功ごとに既知化することで、途中失敗しても再配信・取りこぼしが起きない。
  */
-export type SeenState = { bootstrapped: number; seen_count: number };
+export type FpMsg = { text: string; hash: string };
 
-export type DeliveryDecision<T> = {
-  /** Telegram へ配信するメッセージ */
-  deliver: T[];
-  /** seen_count を更新する場合の新しい値。更新不要なら null */
-  newSeen: number | null;
+export type FpDecision = {
+  /** Telegram へ配信するメッセージ（表示順） */
+  deliver: FpMsg[];
   /** 初回ブートストラップとして処理したか */
   bootstrap: boolean;
 };
 
-export function decideDelivery<T>(
-  state: SeenState,
-  inbound: T[],
+export function decideDeliveryBySeen(
+  bootstrapped: boolean,
+  inbound: FpMsg[],
+  hasSeen: (hash: string) => boolean,
   opts: { bootstrapTail?: number } = {}
-): DeliveryDecision<T> {
-  if (!state.bootstrapped) {
+): FpDecision {
+  if (!bootstrapped) {
     const tail = Math.max(0, Math.floor(opts.bootstrapTail ?? 0));
-    const deliver = tail > 0 ? inbound.slice(-tail) : [];
-    return { deliver, newSeen: inbound.length, bootstrap: true };
+    return { deliver: tail > 0 ? inbound.slice(-tail) : [], bootstrap: true };
   }
-  if (inbound.length < state.seen_count) {
-    return { deliver: [], newSeen: null, bootstrap: false };
-  }
-  const fresh = inbound.slice(state.seen_count);
-  const newSeen = inbound.length !== state.seen_count ? inbound.length : null;
-  return { deliver: fresh, newSeen, bootstrap: false };
+  return { deliver: inbound.filter((m) => !hasSeen(m.hash)), bootstrap: false };
 }
