@@ -38,6 +38,7 @@ export type Inbox = {
   talkUrl: string;      // シェルの main iframe に読み込む URL
   groupChatId: number;  // この受信箱を流す Telegram グループ
   chatframeRe: RegExp;  // 顧客行 iframe（name=chatframe）を受信箱ごとに判別する
+  menuRe: RegExp;       // 検索フォーム iframe（*_message_menu）を受信箱ごとに判別する
 };
 
 // 各受信箱は「URL と グループID の両方が設定されている」ときだけ有効
@@ -52,6 +53,7 @@ const ALL_INBOXES: Inbox[] = [
     // `chat_message?method=frame` と menu `chat_message_menu?` は除外する（前が "/" なので
     // linechat_message にも一致しない）。
     chatframeRe: /\/chat_message(?:\?(?!.*method=frame)|$)/,
+    menuRe: /\/chat_message_menu\b/,
   },
   {
     id: 'talk',
@@ -61,6 +63,7 @@ const ALL_INBOXES: Inbox[] = [
     // talk は chatframe が `linechat_message?site_id...`（?有り）、main ラッパーは
     // `linechat_message_frame`（?無し・後ろが _frame）なので method=frame 除外と併せて衝突しない。
     chatframeRe: /\/linechat_message(?:\?(?!.*method=frame)|$)/,
+    menuRe: /\/linechat_message_menu\b/,
   },
 ];
 
@@ -150,4 +153,10 @@ export const SELECTORS = {
   // ── 返信（必ず行スコープで使う）──
   replyInput: 'textarea[name="message"]',
   sendButton: 'input.btn_send',
+
+  // ── 検索フォーム（menu iframe 内。任意の会員を返信済み含めて開くため）──
+  // 会員ID絞り込み（カンマ区切り可）。1件だけ入れればその会員だけ表示される
+  memberIdFilter: 'textarea[name="member_id"]',
+  // 「すべて」＝ jokyo=0（未返信/返信済みを問わず表示）。返信済みの相手や掘り起こしでも開ける
+  searchAllButton: 'button.find.jokyo0',
 };

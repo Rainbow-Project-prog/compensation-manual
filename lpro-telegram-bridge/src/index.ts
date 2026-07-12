@@ -5,7 +5,7 @@ import { decideDeliveryBySeen } from './logic.js';
 import { runDoctor, printResult } from './preflight.js';
 import {
   initBrowser, closeBrowser, isBrowserGoneError, pageGone, ensureLoggedIn,
-  pollConversations, readInbound, sendReply, refreshTalkView, type Conversation,
+  pollConversations, readInbound, sendReply, type Conversation,
 } from './lpro-adapter.js';
 import {
   startBot, stopBot, setReplyHandler, ensureTopic, pushInbound, reopenTopic, notifyOps,
@@ -83,10 +83,10 @@ async function bootstrapAll(): Promise<void> {
  * 並走したとき両者が同じ差分を読んで二重配信する。
  * 戻り値: 窓から抽出できた顧客メッセージ数（セレクタ切れの無音停止を検知する監視材料）
  */
-async function processConversation(inbox: Inbox, conv: Conversation): Promise<number> {
+async function processConversation(inbox: Inbox, conv: Conversation, opts: { search?: boolean } = {}): Promise<number> {
   const key = keyOf(inbox, conv.memberId);
   dbApi.upsert(key, conv.name);
-  const inbound = await readInbound(inbox, conv);
+  const inbound = await readInbound(inbox, conv, opts);
   const cust = dbApi.get(key)!;
 
   // フィンガープリント方式: 台帳に無いハッシュのメッセージだけ配信する。
@@ -253,11 +253,10 @@ async function main(): Promise<void> {
         // 会話本文はログに残さない（PM2 のログは平文でディスクに蓄積されるため）
         console.log(`→ Lpro送信 [${inbox.name}][${name}] (${text.length}字)`);
         if (shuttingDown) return;
-        // 返信で未返信状態が変わり新着がフィルタから漏れ得るため、この会話だけ即時取り込み直す
-        return runExclusive(async () => {
-          await refreshTalkView(inbox);
-          await processConversation(inbox, { memberId, name, unread: true });
-        }).catch((e) => console.error(`返信後の取り込み失敗 [${inbox.name}][${name}]:`, String(e).slice(0, 200)));
+        // 返信で相手が返信済みになり未返信一覧から外れても、会員ID検索(search:true)で読み直して
+        // 直前に届いていた新着を取りこぼさない
+        return runExclusive(() => processConversation(inbox, { memberId, name, unread: true }, { search: true }))
+          .catch((e) => console.error(`返信後の取り込み失敗 [${inbox.name}][${name}]:`, String(e).slice(0, 200)));
       })
       .catch(async (e) => {
         console.error('送信失敗:', e);

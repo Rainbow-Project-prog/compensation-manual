@@ -193,6 +193,44 @@ export async function refreshTalkView(inbox: Inbox): Promise<void> {
   await gotoInbox(inbox, 20_000);
 }
 
+/** 受信箱の検索フォーム iframe（*_message_menu）を探す */
+function findMenuFrame(inbox: Inbox): Frame | null {
+  const p = page;
+  if (!p || p.isClosed()) return null;
+  for (const f of p.frames()) {
+    if (inbox.menuRe.test(f.url())) return f;
+  }
+  return null;
+}
+
+/**
+ * 会員IDで検索して、その1件だけを chatframe に表示させる（「すべて」=返信済みも含む）。
+ * 返信済みの相手・掘り起こし対象（未返信一覧に居ない相手）も確実に開けるようにするための要。
+ * 表示された chatframe を返す。会員IDが存在しない/検索が効かない場合は throw。
+ */
+async function openMember(inbox: Inbox, memberId: string): Promise<Frame> {
+  const p = page!;
+  await gotoInbox(inbox, 20_000);
+  const menu = findMenuFrame(inbox);
+  if (!menu) throw new Error(`${inbox.name}: 検索フォーム(menu iframe)が見つかりません`);
+  await menu.locator(SELECTORS.memberIdFilter).first().fill(memberId);
+  await menu.locator(SELECTORS.searchAllButton).first().click();
+
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    await p.waitForTimeout(500);
+    const f = findChatFrame(inbox);
+    if (!f) continue; // 検索結果で chatframe 再読込中
+    const row = f
+      .locator(SELECTORS.conversationItem)
+      .filter({ has: f.locator(SELECTORS.memberIdText).getByText(memberId, { exact: true }) });
+    if (await row.count().catch(() => 0) >= 1) return f;
+  }
+  throw new Error(
+    `${inbox.name}: 会員ID=${memberId} を検索しても行が出ません（この受信箱に居ない/存在しない会員IDの可能性）`
+  );
+}
+
 /**
  * 会員IDで顧客行を特定する（★誤配信防止の要★）。
  * 行スコープの Locator を返す前に、行内の会員ID表示が要求キーと完全一致することを検証する。
@@ -225,8 +263,14 @@ type MsgScan = { inbound: boolean; text: string; dt: string; hasImage: boolean }
  * 顧客行の会話履歴から「顧客の発言」をフィンガープリント付きで取得。
  * ハッシュには受信箱IDも混ぜる（同じ会員IDが両受信箱に居ても取り違えない）。
  */
-export async function readInbound(inbox: Inbox, conv: Conversation): Promise<InboundMsg[]> {
-  const f = await gotoInbox(inbox, 20_000);
+export async function readInbound(
+  inbox: Inbox,
+  conv: Conversation,
+  opts: { search?: boolean } = {}
+): Promise<InboundMsg[]> {
+  // search=true は会員IDで検索して開く（返信済みで未返信一覧から外れた相手も読める）。
+  // 通常の巡回は default（未返信一覧）を使う（毎回検索するのは重いため）。
+  const f = opts.search ? await openMember(inbox, conv.memberId) : await gotoInbox(inbox, 20_000);
   const row = await findRow(f, conv.memberId, inbox);
   const scans: MsgScan[] = await row.evaluate(
     (rowEl, S) => {
@@ -276,36 +320,50 @@ export async function readInbound(inbox: Inbox, conv: Conversation): Promise<Inb
  */
 export async function sendReply(inbox: Inbox, memberId: string, text: string): Promise<void> {
   const p = page!;
-  const f = await gotoInbox(inbox, 20_000);
+  // ★会員IDで検索して対象だけを表示する（未返信一覧に居ない＝返信済みの相手や掘り起こしでも開ける）。
+  // findRow で会員IDの完全一致を再検証してから、その行スコープ内でのみ入力・送信する。
+  const f = await openMember(inbox, memberId);
   const row = await findRow(f, memberId, inbox);
-  const input = row.locator(SELECTORS.replyInput).first();
-  await input.fill(text);
 
-  const outboundGroups = row.locator(`${SELECTORS.messageGroup}:not(.${SELECTORS.inboundGroupClass})`);
-  const rightBefore = await outboundGroups.count();
+  const outbound = `${SELECTORS.messageGroup}:not(.${SELECTORS.inboundGroupClass})`;
   const probe = clean(text).slice(0, 30);
-  const probeBefore = probe ? await outboundGroups.filter({ hasText: probe }).count().catch(() => 0) : 0;
+  // 送信前の「自分側吹き出しに送信本文を含む数」。送信成功で必ず1つ増える
+  const probeBefore = probe
+    ? await row.locator(outbound).filter({ hasText: probe }).count().catch(() => 0)
+    : 0;
+
+  await row.locator(SELECTORS.replyInput).first().fill(text);
 
   const onDialog = (d: import('playwright').Dialog) => { void d.accept().catch(() => {}); };
   p.once('dialog', onDialog);
   try {
     await row.locator(SELECTORS.sendButton).first().click();
 
-    const deadline = Date.now() + 10_000;
+    // 送信ボタンは per-row フォームを submit し chatframe を再読込する（参照が切れる）。
+    // 会員IDで検索し直して「自分側吹き出しに送信本文が増えたか」を確認する（返信済みでも
+    // 「すべて」検索なので相手は表示に残る）。偽陰性→二重送信を避けるため入力欄クリアも成功扱い。
+    const deadline = Date.now() + 20_000;
+    let lastReason = '再読込待ち';
     while (Date.now() < deadline) {
-      const cleared = (await input.inputValue().catch(() => text)) === '';
-      const rightNow = await outboundGroups.count().catch(() => rightBefore);
-      const probeNow = probe ? await outboundGroups.filter({ hasText: probe }).count().catch(() => probeBefore) : probeBefore;
-      if (cleared || rightNow > rightBefore || probeNow > probeBefore) {
-        console.log(
-          `送信確認OK[${inbox.name}]（シグナル: ${cleared ? '入力欄クリア' : rightNow > rightBefore ? '吹き出し増加' : '本文一致'}）`
-        );
+      await p.waitForTimeout(1200);
+      let fc: Frame;
+      try { fc = await openMember(inbox, memberId); } catch { lastReason = '再検索待ち'; continue; }
+      const row2 = fc
+        .locator(SELECTORS.conversationItem)
+        .filter({ has: fc.locator(SELECTORS.memberIdText).getByText(memberId, { exact: true }) });
+      if (await row2.count().catch(() => 0) !== 1) { lastReason = '行の再取得待ち'; continue; }
+      const probeNow = probe
+        ? await row2.locator(outbound).filter({ hasText: probe }).count().catch(() => probeBefore)
+        : probeBefore;
+      const cleared = (await row2.locator(SELECTORS.replyInput).first().inputValue().catch(() => text)) === '';
+      if (probeNow > probeBefore || cleared) {
+        console.log(`送信確認OK[${inbox.name}]（シグナル: ${probeNow > probeBefore ? '送信本文が反映' : '入力欄クリア'}）`);
         return;
       }
-      await p.waitForTimeout(500);
+      lastReason = '送信本文が反映されず・入力欄に残存';
     }
     throw new Error(
-      `${inbox.name}: 送信を確認できませんでした（入力欄が残ったまま/送信済み吹き出しが増えない）。` +
+      `${inbox.name}: 送信を確認できませんでした（${lastReason}）。` +
       '⚠️ 実際には送信されている可能性もあります。再送する前に必ず Lpro の画面で確認してください'
     );
   } finally {
