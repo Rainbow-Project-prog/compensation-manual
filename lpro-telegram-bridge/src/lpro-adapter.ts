@@ -174,37 +174,56 @@ async function applySearch(
   opts: { memberId: string; unreadOnly: boolean }
 ): Promise<Frame> {
   const p = page!;
-  await gotoInbox(inbox, 20_000);
-  const menu = findMenuFrame(inbox);
-  if (!menu) throw new Error(`${inbox.name}: 検索フォーム(menu iframe)が見つかりません`);
-  await menu.locator(SELECTORS.memberIdFilter).first().fill(opts.memberId);
-  // 表示数を広げる（未返信100超の取りこぼし防止）。無ければ無視
-  await menu.locator(SELECTORS.limitLarge).first().check().catch(() => {});
-  const btn = opts.unreadOnly ? SELECTORS.searchUnreadButton : SELECTORS.searchAllButton;
 
-  // ★検索フォーム submit は chatframe を再読込する（POST, target=chatframe）。
-  // 一括返信行(rowid=0)は再読込前の旧文書にも常在するため「行が出た」では再読込完了を判定できない。
-  // フォーム action への POST 応答を待って「再読込が確定した」ことを掴んでから読む。
-  const respP = p
-    .waitForResponse(
-      (r) => inbox.chatframeRe.test(r.url()) && r.request().method() === 'POST',
-      { timeout: 15_000 }
-    )
-    .catch(() => null);
-  await menu.locator(btn).first().click();
-  await respP; // 応答到達（=新文書コミット）まで待つ
+  // menu iframe の検索欄を埋めて submit し、再読込後の chatframe を返す。
+  // 二段iframe（main→menu）の描画は goto 完了後も遅れることがあるため、既定30sを待たず
+  // 検索欄の出現を短く待つ。掴めなければ呼び出し側で1回だけ再ナビゲートして再試行する。
+  const attempt = async (): Promise<Frame> => {
+    const menu = findMenuFrame(inbox);
+    if (!menu) throw new Error(`${inbox.name}: 検索フォーム(menu iframe)が見つかりません`);
+    const idField = menu.locator(SELECTORS.memberIdFilter).first();
+    await idField.waitFor({ state: 'visible', timeout: 8_000 });
+    await idField.fill(opts.memberId, { timeout: 8_000 });
+    // 表示数を広げる（未返信100超の取りこぼし防止）。無ければ無視
+    await menu.locator(SELECTORS.limitLarge).first().check({ timeout: 4_000 }).catch(() => {});
+    const btn = opts.unreadOnly ? SELECTORS.searchUnreadButton : SELECTORS.searchAllButton;
 
-  // 応答後に chatframe を取り直し、描画の落ち着きを短く待つ
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
-    const f = findChatFrame(inbox);
-    if (f) {
-      await f.waitForSelector(SELECTORS.conversationItem, { timeout: 3000, state: 'attached' }).catch(() => {});
-      return f;
+    // ★検索フォーム submit は chatframe を再読込する（POST, target=chatframe）。
+    // 一括返信行(rowid=0)は再読込前の旧文書にも常在するため「行が出た」では再読込完了を判定できない。
+    // フォーム action への POST 応答を待って「再読込が確定した」ことを掴んでから読む。
+    const respP = p
+      .waitForResponse(
+        (r) => inbox.chatframeRe.test(r.url()) && r.request().method() === 'POST',
+        { timeout: 15_000 }
+      )
+      .catch(() => null);
+    await menu.locator(btn).first().click({ timeout: 8_000 });
+    await respP; // 応答到達（=新文書コミット）まで待つ
+
+    // 応答後に chatframe を取り直し、描画の落ち着きを短く待つ
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      const f = findChatFrame(inbox);
+      if (f) {
+        await f.waitForSelector(SELECTORS.conversationItem, { timeout: 3_000, state: 'attached' }).catch(() => {});
+        return f;
+      }
+      await p.waitForTimeout(300);
     }
-    await p.waitForTimeout(300);
+    throw new Error(`${inbox.name}: 検索後に chatframe が表示されません（セッション切れの疑い）`);
+  };
+
+  await gotoInbox(inbox, 20_000);
+  try {
+    return await attempt();
+  } catch (e) {
+    if (isBrowserGoneError(e)) throw e; // ブラウザ喪失は上位の復旧に委ねる
+    // 二段iframeの描画遅延・フレーム取り違えの一過性対策: 明示再ナビゲートして1回だけ再試行
+    console.log(`${inbox.name}: 検索フォーム取得を再試行します（${String(e).slice(0, 80)}）`);
+    currentInboxId = null; // gotoInbox に強制再ナビゲートさせる
+    await gotoInbox(inbox, 20_000);
+    return await attempt();
   }
-  throw new Error(`${inbox.name}: 検索後に chatframe が表示されません（セッション切れの疑い）`);
 }
 
 /**
