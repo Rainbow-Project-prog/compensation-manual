@@ -1,6 +1,6 @@
 import { chromium, type BrowserContext, type Page, type Frame, type Locator } from 'playwright';
 import { createHash } from 'node:crypto';
-import { cfg, SELECTORS } from './config.js';
+import { cfg, SELECTORS, httpCredentials } from './config.js';
 
 export type Conversation = { customerKey: string; name: string; unread: boolean };
 /** hash はフィンガープリント（会員ID+日時+本文+同文連番）。重複配信・取りこぼし防止の要 */
@@ -26,6 +26,9 @@ export async function initBrowser(): Promise<void> {
   ctx = await chromium.launchPersistentContext(cfg.userDataDir, {
     headless: cfg.headless,
     viewport: { width: 1400, height: 950 },
+    // /manage の HTTP ベーシック認証（realm "InfoSys Manager"）に自動応答する。
+    // 未設定なら undefined（従来どおり）で、その場合はページ側の認証ダイアログに手動対応が必要
+    httpCredentials: httpCredentials(),
     // Ctrl+C / kill の終了処理は index.ts の shutdown() が担う。Playwright 既定のシグナルハンドラは
     // ブラウザを閉じた直後に process.exit してしまい、返信の排水・bot停止・DBクローズを先取りで打ち切る
     // （プロセス終了時の chromium の後始末は Playwright の exit ハンドラが引き続き行う）

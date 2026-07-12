@@ -39,6 +39,13 @@ export function runDoctor(): PreflightResult {
       problems.push(`環境変数 ${k} が未設定/プレースホルダのままです`);
     }
   }
+  // Lpro の /manage はベーシック認証で保護されているため、認証情報が無いと起動できない。
+  // 認証は Cookie と違いプロファイルに永続しないため、環境変数からの供給が必須
+  const talk = process.env.LPRO_TALK_URL ?? '';
+  if (/\/manage(\/|$|\?)/.test(talk) && !process.env.LPRO_BASIC_USER) {
+    problems.push('LPRO_BASIC_USER / LPRO_BASIC_PASS が未設定です（/manage は HTTP ベーシック認証で保護されています）');
+  }
+
   // GROUP_CHAT_ID は数値（-100...）であること
   const gid = process.env.GROUP_CHAT_ID;
   if (gid && gid.trim() !== '' && Number.isNaN(Number(gid))) {

@@ -9,7 +9,7 @@ import { chromium, type Frame } from 'playwright';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
-import { cfg } from './config.js';
+import { cfg, httpCredentials } from './config.js';
 
 const OUT = fileURLToPath(new URL('../dump', import.meta.url));
 // 事前に判明している「トーク画面にしか無い」目印（担当者提供の断片より）
@@ -18,6 +18,7 @@ const MARKER = '.btn_send, form[action*="linechat_message"], .mmsg_member, .mmsg
 const ctx = await chromium.launchPersistentContext(cfg.userDataDir, {
   headless: false,
   viewport: { width: 1400, height: 950 },
+  httpCredentials: httpCredentials(),
 });
 const page = ctx.pages()[0] ?? (await ctx.newPage());
 await page.goto(cfg.loginUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});

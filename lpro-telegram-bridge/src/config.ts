@@ -15,10 +15,20 @@ export const cfg = {
   onlyUnread: (process.env.ONLY_UNREAD ?? 'true') === 'true',
   headless: (process.env.HEADLESS ?? 'false') === 'true',
   userDataDir: process.env.USER_DATA_DIR ?? join(pkgRoot, '.lpro-profile'),
+  // Lpro の /manage は HTTP ベーシック認証（realm "InfoSys Manager"）で保護されている。
+  // これは Cookie と違いプロファイルに永続しないため、環境変数から毎回渡す必要がある
+  // （設定すると Playwright が認証チャレンジに自動応答する）。Lpro アプリのログインとは別物。
+  basicUser: process.env.LPRO_BASIC_USER ?? '',
+  basicPass: process.env.LPRO_BASIC_PASS ?? '',
   // 停止中・稼働中に初めて現れた顧客（=いま送ってきた新規顧客）の初回配信件数。
   // 0にすると初回は何も配らない＝初回メッセージを取りこぼすので注意。
   bootstrapTail: num('BOOTSTRAP_TAIL', 5),
 };
+
+/** launchPersistentContext に渡す httpCredentials（ベーシック認証が未設定なら undefined） */
+export function httpCredentials(): { username: string; password: string } | undefined {
+  return cfg.basicUser ? { username: cfg.basicUser, password: cfg.basicPass } : undefined;
+}
 
 function required(k: string): string {
   const v = process.env[k];
