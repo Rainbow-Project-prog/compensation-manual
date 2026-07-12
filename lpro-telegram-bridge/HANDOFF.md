@@ -42,14 +42,14 @@
 ブリッジ常駐（Node + TypeScript）  ← あなたのPCで常時起動
    ├─ telegram.ts  : トピック管理・送受信（grammY / long polling、公開URL不要）
    ├─ lpro-adapter.ts : Playwright で Lpro を自動操作（★Lpro依存はここだけ★）
-   ├─ db.ts        : SQLite（顧客↔トピック↔既読件数のマッピング）
+   ├─ db.ts        : SQLite（顧客↔トピック↔既読ハッシュ台帳）
    ├─ queue.ts     : Playwright操作を直列化（巡回と送信の衝突防止）
    └─ index.ts     : 巡回ループ＋配線
    ⇅  ログイン状態を永続化して自動操作
 Lpro（トーク応対画面・ブラウザ管理画面）
 ```
 
-- **新着検知**：トーク応対を巡回 → 未読の会話を開く → 相手発言を読む → 既読件数を超えた分だけ Telegram へ。
+- **新着検知**：顧客行（`tr.rowitem`）を巡回 → 行内の会話履歴を読み → 会員ID+日時+本文のハッシュを台帳（`seen_messages`）と照合し、未知分だけ Telegram へ。
 - **返信反映**：Telegram のトピックで打つ → スレッドIDから顧客特定 → Lpro の該当会話に自動入力＆送信。
 - **取り違え防止**：顧客ごとに専用トピック。
 - **過去ログのスパム防止**：起動時に全会話の既読基準を記録し、過去ログは配らない。停止中・稼働中に初めて現れた（＝いま送ってきた）会話だけは末尾 `BOOTSTRAP_TAIL` 件（既定5）を配信して初回メッセージの取りこぼしを防ぐ（§8参照）。
@@ -108,8 +108,8 @@ npx playwright install chromium
 実際のコードは本ディレクトリの `package.json` / `tsconfig.json` / `.env.example` / `src/` 配下に
 そのまま実装済み。仕様の詳細は各ファイルのコメントを参照。
 
-> 補足：`readInbound` は「既読件数を超えた分だけ配る」前提の **件数ベース**で実装している。
-> もし Lpro のメッセージ要素に**一意ID やタイムスタンプ属性**があるなら、それをキーにした重複排除に差し替える方が堅牢（リスト仮想化対策）。`db.ts` に `seen_messages(hash)` テーブルを足す方式に変更する。
+> 補足：`readInbound` は各メッセージの日時（`.mmsgdt`）を用いた **フィンガープリント方式**で実装済み
+> （`logic.ts` `decideDeliveryBySeen` / `db.ts` `seen_messages`）。リスト仮想化・同数入れ替わりに耐える。
 
 ---
 
@@ -124,9 +124,10 @@ npx playwright install chromium
 cp .env.example .env
 #    TELEGRAM_BOT_TOKEN / LPRO_LOGIN_URL / LPRO_TALK_URL を記入
 
-# 3) DOM セレクタを埋める（★ログインより先★。少なくとも loggedInMarker が無いと
-#    npm run login のログイン確認が即エラーで止まる）→ 「6. DOM収集」を参照
-#    src/config.ts の SELECTORS と adapter の TODO
+#    （DOM セレクタは完了済み。UI変更時のみ RUNBOOK A）
+
+# 3) 事前チェック（.env / SELECTORS / Node バージョン）
+npm run doctor
 
 # 4) Lpro に初回ログイン（ブラウザが開く。2FAも手動で通す）
 npm run login
@@ -151,6 +152,10 @@ pm2 save
 ---
 
 ## 6. DOM 収集（ユーザー作業・2分）
+
+> **【完了済み】** この収集は 2026-07-11 に `npm run dump`（全フレームのHTMLを `dump/` に自動保存する診断ツール）で実施済み。
+> 再収集が必要になるのは Lpro の UI 変更時のみで、その場合も `npm run dump` を使うのが確実。
+> 以下のリストは参考として残す。
 
 Lpro のトーク応対画面で F12 を開き、以下を右クリック → Copy → **Copy outerHTML** して Claude Code に貼る：
 
@@ -188,12 +193,11 @@ Lpro のトーク応対画面で F12 を開き、以下を右クリック → Co
 
 ## 8. 既知の注意点・将来改善
 
-- **件数ベースの新着検知**は append-only 前提。件数減少サイクルは「部分レンダリング」とみなして
-  スキップする防御を実装済みだが、**同数入れ替わり（1件消えて1件増える）は原理的に検知できない**。
-  Lpro のメッセージ要素に一意ID／時刻属性があれば、フィンガープリント方式（`seen_messages` テーブル）
-  に切り替える（FABLE5_HANDOFF.md の最重要残タスク）。
-- 顧客名のみをキーにすると **同名衝突**で取り違える。一意属性があれば必ずそちらを `customerKey` に使う
-  （`SELECTORS.customerKeyAttr`）。行全文をキーにしてはならない（プレビュー変化でキーが揺れ、
+- **新着検知はフィンガープリント方式**（`seen_messages` 台帳）で実装済み。同数入れ替わり
+  （1件消えて1件増える）・履歴窓のズレでも取りこぼし／再配信は起きない
+  （`test/logic.test.ts` に回帰テスト有）。
+- 顧客キーは **会員ID**（`SELECTORS.memberIdText` の完全一致、アカバンでも不変）を使う。
+  顧客名や行全文をキーにしてはならない（同名衝突・プレビュー変化でキーが揺れ、
   顧客1人に複数トピックができる）。
 - ポーリングは「未読のみ巡回」（`ONLY_UNREAD=true`）が軽い。全件巡回は会話数が多いと遅くなる。
 - 画像・スタンプ等の非テキストは本実装では未対応（テキスト返信が主目的）。Telegram 側で打った

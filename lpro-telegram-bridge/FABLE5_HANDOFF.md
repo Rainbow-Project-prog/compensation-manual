@@ -15,6 +15,9 @@ Ultracode で実施し、結果を私に報告してから §5 の実装フェ�
 私の環境は Windows + VS Code + Node.js 20+ です。Lpro の DOM 断片はレビュー後に私が貼ります。
 ```
 
+> **【2026-07-12 更新】§2 のレビュー・DOM確定・実装（§5 手順1〜3相当）はすべて完了済み。
+> 残タスクは実機デプロイのみ（`review/RE_REVIEW_2026-07-10.md` 参照）。**
+
 ---
 
 ## 1. 経緯と現状（何がどこまで終わっているか）
@@ -25,14 +28,15 @@ Ultracode で実施し、結果を私に報告してから §5 の実装フェ�
 | コード一式の実装 | **Claude Opus 4.8**（クラウドセッション） | 完了 |
 | 事前レビュー（45エージェント・5次元・敵対的検証） | **Claude Fable 5**（クラウドセッション） | 完了: **38件確定 / 2件棄却** |
 | 確定指摘の修正 | Fable 5（同セッション） | **27件対応済み / 6件部分対応 / 3件軽減 / 2件未対応** |
-| DOM セレクタ確定・実機動作確認 | **← あなた（家PCの Fable 5）** | 未着手 |
+| DOM セレクタ確定（`npm run dump` で実機DOM取得） | 家PCの Fable 5 | **完了（2026-07-11）** |
+| 実機動作確認・PM2常駐化 | 家PCの Fable 5 | 未着手（最終監査済み・ゲート判定 go-with-conditions） |
 
-- 検証済み: `tsc --noEmit` エラーゼロ / `npm test` 11/11 パス / `npm run doctor` が未設定を正しく検出
+- 検証済み: `tsc --noEmit` エラーゼロ / `npm test` 12/12 パス / `npm run doctor` が未設定を正しく検出
 - 全指摘の詳細と対応状況: **`review/PRE_REVIEW_FINDINGS.md`**（必読。指摘ごとの具体的な故障シナリオ付き）
 - 背景・設計・リスク: `HANDOFF.md` / 運用復旧手順: `RUNBOOK.md` / セットアップ: `README.md`
 
-**重要な前提**: 実装もレビュー修正も**実際の Lpro に一度も触れずに**行われている。
-`src/config.ts` の SELECTORS は全部 `'TODO'` のままで、実機での動作確認はゼロ。
+**重要な前提**: 実装とレビュー修正は**実際の Lpro に触れずに**行われた。
+`src/config.ts` の SELECTORS は実機DOMで全確定済み（実機での稼働テストが未実施）。
 
 ---
 
@@ -73,8 +77,8 @@ Ultracode で実施し、結果を私に報告してから §5 の実装フェ�
   顧客の会話データを Telegram に転送するため、グループは非公開・最小メンバー運用が前提。
   実装時に**データを増やして外に出す変更**（ログへの会話全文出力等）をしないよう注意。
 - **Ultracode の使い方**: DOM 確定後の実装・修正のたびに、多角レビュー＋敵対的検証を回すこと。
-  特に「取り違え」（別の顧客に返信が飛ぶ）は営業上の事故になるため、`openConversation` と
-  `customerKey` の安定性は最優先で検証する。
+  特に「取り違え」（別の顧客に返信が飛ぶ）は営業上の事故になるため、`findRow`（会員IDでの行特定）
+  と会員IDキーの安定性は最優先で検証する。
 - **前セッションの限界**: 実機なしのレビューなので、「実DOMでは起きない/起きる」問題の見落としがあり得る。
   実機での最初の巡回は `ONLY_UNREAD=false`・顧客1〜2人のテスト環境（可能なら自分の LINE で友だち追加）で行うのが安全。
 
@@ -97,10 +101,9 @@ Ultracode で実施し、結果を私に報告してから §5 の実装フェ�
 
 ### 🔶 部分対応（スキャフォールド済み・実DOMで確定）
 
-- [2][18][19] **customerKey の安定化**: `SELECTORS.customerKeyAttr`（一意属性名）と `SELECTORS.customerName`
-  （名前だけの要素）を追加済み。実DOMで値を確定する。**行全文をキーにしてはならない**
-  （プレビュー変化でキーが揺れ、顧客1人に複数トピック＝取り違えの温床）。
-- [1] 同数入れ替わり問題 → [22] で解決する。
+- [2][18][19] **customerKey の安定化**: 顧客キーは会員ID（`SELECTORS.memberIdText`）で確定済み。
+  **行全文をキーにしてはならない**（プレビュー変化でキーが揺れ、顧客1人に複数トピック＝取り違えの温床）。
+- [1] 同数入れ替わり問題 → [22] フィンガープリント実装で解決済み。
 - [14] Telegram のグループ 20msg/分制限。現状 retry_after 尊重のみ。ブートストラップ時に大量顧客が
   未読だと遅くなる可能性 → 実運用で様子見。
 - [15] 画像・スタンプの転送は未対応（Telegram 側には「送れない」と自動返信する）。必要なら拡張。
@@ -109,7 +112,7 @@ Ultracode で実施し、結果を私に報告してから §5 の実装フェ�
 
 - [6] Windows の PM2 停止はシグナルが届かないため `shutdown_with_message` で対応済みだが、
   強制kill 経路は残る（RUNBOOK E）。
-- [21] `inboundBubbleMarker` は純CSS（クラス等）を選ぶこと（`Element.matches` での自己判定に使うため）。
+- [21] 旧 `inboundBubbleMarker` は廃止。現行は `messageGroup` + `inboundGroupClass`（`.mb_M.left`）で方向判定（解決済み）。
 - [24] `HEADLESS=true` では手動ログイン不可（明確なエラーを出すのみ。原理的制約）。
 
 ---
@@ -117,9 +120,9 @@ Ultracode で実施し、結果を私に報告してから §5 の実装フェ�
 ## 4. コードの構造（レビュー時の地図）
 
 ```
-src/config.ts        ← ★Lpro依存の集約点。SELECTORS 10項目（全部 'TODO'）★
+src/config.ts        ← ★Lpro依存の集約点。SELECTORS 14項目（実機DOMで全確定済み）★
 src/lpro-adapter.ts  ← ★Playwright 操作。壊れたらここと config.ts だけ直す設計★
-src/logic.ts         ← 配信判定の純関数（test/logic.test.ts で11ケース検証済み）
+src/logic.ts         ← 配信判定の純関数（test/logic.test.ts で12ケース検証済み）
 src/index.ts         ← 起動時ブートストラップ → 巡回ループ。エラー分類・復旧・終了処理
 src/telegram.ts      ← grammY。リトライ・分割送信・トピック復旧・フィードバック
 src/db.ts            ← SQLite。customers(customer_key, topic_thread_id, seen_count, bootstrapped)
@@ -135,12 +138,12 @@ src/preflight.ts     ← 起動前チェック本体（doctor CLI と index.ts �
 ## 5. レビュー後の実装フェーズ（ユーザーと一緒に）
 
 1. ユーザーに **DOM 断片**を依頼する（HANDOFF §6 の収集リスト）。加えて必ず確認:
-   - メッセージ要素に**一意ID/時刻属性があるか** → [22] の方式決定
-   - 会話行の**一意属性**（`data-*` 等）→ `customerKeyAttr`
+   - メッセージ要素に**一意ID/時刻属性があるか** → [22] の方式決定（日時 `.mmsgdt` で確定済み）
+   - 会話行の**会員ID要素** → `memberIdText`（確定済み）
    - **名前だけの要素** → `customerName`
-   - 会話を **URL で直接開けるか** → `openConversation` を URL 方式に差し替え（クリックより確実）
-2. SELECTORS 10項目 + `lpro-adapter.ts` の TODO（送信検証 [25]）を確定
-3. [22] の方式を決めて実装（一意IDがあるなら `seen_messages` テーブル + 重複排除に移行）
+   - 行の特定方法 → `findRow`（会員IDの完全一致。実画面はインライン行型で「会話を開く」操作はない）
+2. SELECTORS 14項目 + `lpro-adapter.ts` の送信検証 [25] を確定（完了済み）
+3. [22] の方式を決めて実装（フィンガープリント方式 `seen_messages` に移行済み）
 4. `npm run doctor` → `npm run login`（headed・2FA手動）→ `npm run chatid` → `npm start`
 5. **実機テスト**（HANDOFF §7 のチェックリスト全項目）。特に:
    - 別顧客のトピックで打って**取り違えが起きない**こと（最重要）
@@ -165,5 +168,5 @@ src/preflight.ts     ← 起動前チェック本体（doctor CLI と index.ts �
 ```bash
 npm run doctor      # 設定の抜け（.env / SELECTORS / Node バージョン）
 npm run typecheck   # 型チェック（src + test）
-npm test            # 配信判定ロジック 11 ケース
+npm test            # 配信判定ロジック 12 ケース
 ```

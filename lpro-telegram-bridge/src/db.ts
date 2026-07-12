@@ -28,6 +28,15 @@ CREATE TABLE IF NOT EXISTS seen_messages (
   created_at   INTEGER NOT NULL,
   PRIMARY KEY (customer_key, hash)
 );
+-- 送信待ちのオペレータ返信。送信完了前にプロセスが死んでも（クラッシュ/電源断）
+-- 無音で消さず、再起動時に該当トピックへ「未送信の可能性」を通知するための控え
+CREATE TABLE IF NOT EXISTS pending_replies (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  customer_key TEXT NOT NULL,
+  name         TEXT,
+  text         TEXT NOT NULL,
+  created_at   INTEGER NOT NULL
+);
 `);
 
 export type Customer = {
@@ -76,12 +85,34 @@ export const dbApi = {
     db.prepare(
       'INSERT OR IGNORE INTO seen_messages (customer_key, hash, created_at) VALUES (?,?,?)'
     ).run(key, hash, Date.now()),
-  // 顧客ごとに直近 keep 件だけ残す（履歴窓は数件なので300もあれば十分。肥大防止）
-  pruneSeen: (key: string, keep = 300) =>
+  // 顧客ごとに直近 keep 件だけ残す（履歴窓は十数件なので300あれば十分。肥大防止）。
+  // 併せて200日より古い記録も落とす: フィンガープリントの日時は年を含まないため、
+  // 丸1年後に同一日時・同一本文が来ると衝突して届かなくなる問題の予防（古い方を先に消す）
+  pruneSeen: (key: string, keep = 300) => {
     db.prepare(
       `DELETE FROM seen_messages WHERE customer_key=? AND hash NOT IN (
          SELECT hash FROM seen_messages WHERE customer_key=? ORDER BY created_at DESC, rowid DESC LIMIT ?)`
-    ).run(key, key, keep),
+    ).run(key, key, keep);
+    db.prepare('DELETE FROM seen_messages WHERE customer_key=? AND created_at < ?')
+      .run(key, Date.now() - 200 * 24 * 60 * 60 * 1000);
+  },
+  countSeenAll: () =>
+    (db.prepare('SELECT COUNT(*) AS n FROM seen_messages').get() as { n: number }).n,
+  countBootstrapped: () =>
+    (db.prepare('SELECT COUNT(*) AS n FROM customers WHERE bootstrapped=1').get() as { n: number }).n,
+  resetAllBootstrapped: () => db.prepare('UPDATE customers SET bootstrapped=0').run(),
+  // ── 送信待ち返信の控え ──
+  addPending: (key: string, name: string, text: string) =>
+    Number(
+      db.prepare(
+        'INSERT INTO pending_replies (customer_key, name, text, created_at) VALUES (?,?,?,?)'
+      ).run(key, name, text, Date.now()).lastInsertRowid
+    ),
+  deletePending: (id: number) => db.prepare('DELETE FROM pending_replies WHERE id=?').run(id),
+  listPending: () =>
+    db.prepare('SELECT * FROM pending_replies ORDER BY id').all() as Array<{
+      id: number; customer_key: string; name: string | null; text: string; created_at: number;
+    }>,
 };
 
 /** 終了時に呼ぶ。WAL を確定してファイルを閉じる */

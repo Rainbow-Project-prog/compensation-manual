@@ -19,8 +19,9 @@
    - 「トーク画面（chatframe）が見つかりません」が出続ける → `mainFrame` / `chatFrame`（iframe構造の変化）
      または LPRO_TALK_URL（chat_message?method=frame）の変更
    - 顧客行が0件 → `conversationItem`（tr.rowitem）
-   - **一覧は取れるのに新着が全く配信されない** → `statusCell` / `unreadText`（既定の `ONLY_UNREAD=true` では
-     「未返信」が一度もマッチしないと全会話が未読なし扱いになり、無警告で巡回対象から外れる）
+   - **一覧は取れるのに新着が全く配信されない** → `statusCell` / `unreadText`（未知の状態表記は安全側で未読扱いになる。
+     ただし `statusCell` が「返信済」を含む場合のみ未読なし扱いなので、「返信済」の表記が変わった場合は全行が
+     未読扱いになり巡回が重くなる。ログの「巡回: N行/未読M件」で気付ける）
    - 顧客が「スキップ」され続ける → `memberIdText`（会員ID要素）
    - 名前が変 → `customerName`
    - メッセージが拾えない → `messageGroup` / `inboundGroupClass` / `bubble` / `msgDatetime`
@@ -32,14 +33,13 @@
 
 3. **`src/config.ts` の SELECTORS を差し替える**（基本ここだけ）。
 
-4. **会話の開き方が変わった場合**は `src/lpro-adapter.ts` の `openConversation()` を調整
-   （キー属性/名前での行クリック。URLで直接開けるならそちらへ差し替え）。
+4. **行の特定方法が変わった場合**は `src/lpro-adapter.ts` の `findRow()`（会員IDの完全一致で行を特定）を調整。
 
-5. **顧客キーの属性が変わった場合**は `src/config.ts` の `SELECTORS.customerKeyAttr` を実際の属性名へ。
+5. **顧客キー（会員ID）の表示要素が変わった場合**は `src/config.ts` の `SELECTORS.memberIdText` を差し替え。
 
 6. `npm run doctor` で TODO 残りが無いか確認 → `npm start` で再開。
 
-> ヒント: 一意な属性（`data-user-id` 等）があれば必ず `customerKey` に使う。表示名キーは同名衝突で取り違える。
+> ヒント: 顧客キーは会員ID（アカバンでも不変）。表示名をキーにしてはならない（同名衝突で取り違える）。
 
 ---
 
@@ -62,8 +62,8 @@ retry_after を待って再試行する）。作成失敗は次の配信サイ�
 
 - セッションは `USER_DATA_DIR`（既定はプロジェクト直下の `.lpro-profile`）に保存される。**このフォルダを消さない**こと。
 - 巡回中に切れた場合は poll エラー時に自動で再ログイン待ち（`ensureLoggedIn`）に入る。
-  ログイン画面へリダイレクトされて会話一覧が0件になるケースも「セッション切れの疑い」として
-  エラー化し、同じ復旧経路に入る。画面が見える状態（`HEADLESS=false`）なら手動で通せば復帰する。
+  ログイン画面へリダイレクトされるとトーク画面（`chatframe`）が表示されなくなるため、
+  エラー化して同じ復旧経路に入る。画面が見える状態（`HEADLESS=false`）なら手動で通せば復帰する。
 - 2FA は初回だけ手動。確立後に `HEADLESS=true` で弾かれるなら headed のまま運用する。
 
 ---
@@ -83,6 +83,10 @@ retry_after を待って再試行する）。作成失敗は次の配信サイ�
 - 顧客1人に**トピックが複数できる**ことは起きない設計(キー=会員ID固定)。起きたら `memberIdText` を確認。
 - 配信判定そのものは `src/logic.ts`(`decideDeliveryBySeen`)に分離済み。挙動を変えるときは
   まず `test/logic.test.ts` にケースを足してから直すと安全。
+- 既定の `ONLY_UNREAD=true` は「未返信」状態の顧客だけを読む。顧客の新着に Lpro の画面から
+  直接返信すると状態が「返信済み」に変わり、そのメッセージは Telegram のトピックに現れないことがある
+  （業務上は返信済みなので実害は小さい）。Telegram 側にも完全なミラーが必要な運用では
+  `ONLY_UNREAD=false`（全行を毎巡回チェック。台帳があるので重複はしない）を使う。
 
 ---
 

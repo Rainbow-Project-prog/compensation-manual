@@ -45,19 +45,17 @@ npx playwright install chromium
 cp .env.example .env
 #    TELEGRAM_BOT_TOKEN / LPRO_LOGIN_URL / LPRO_TALK_URL を記入
 
-# 3) DOMセレクタを埋める（★ログインより先★）
-#    src/config.ts の SELECTORS（少なくとも loggedInMarker）を埋めないと
-#    npm run login が「SELECTORS.loggedInMarker が未設定です」と即エラーで止まる。
-#    → HANDOFF.md「6. DOM収集」を参照
+#    （完了済み）SELECTORS は 2026-07-11 の実機DOM（npm run dump）で確定済み。
+#    通常は編集不要（Lpro の UI 変更時のみ RUNBOOK A 参照）。
 
-# 4) Lpro 初回ログイン（ブラウザが開く。2FAも手動で通す）
+# 3) Lpro 初回ログイン（ブラウザが開く。2FAも手動で通す）
 npm run login
 
-# 5) Telegram グループの chat_id を取得（※ブリッジ本体と同時実行しない）
+# 4) Telegram グループの chat_id を取得（※ブリッジ本体と同時実行しない）
 npm run chatid
 #    表示された -100... を .env の GROUP_CHAT_ID に記入
 
-# 6) 事前チェック → 本起動
+# 5) 事前チェック → 本起動
 npm run doctor
 npm start
 ```
@@ -81,8 +79,9 @@ pm2 save
 |---------|------|
 | `npm run doctor` | 起動前チェック。`.env` の必須項目・SELECTORS の `'TODO'` 残り・Node バージョンを検出（`npm start` 時に自動実行） |
 | `npm start` | 本起動（巡回ループ）。ブラウザクラッシュ時は自動再起動、セッション切れ疑い時は再ログイン待ち |
-| `npm run login` | Lpro 初回ログイン（headedブラウザ。SELECTORS を埋めてから実行） |
+| `npm run login` | Lpro 初回ログイン（headedブラウザ） |
 | `npm run chatid` | Telegram グループの chat_id 取得（本体停止中に実行） |
+| `npm run dump` | トーク画面の実DOMを `dump/` に保存する診断ツール（UI変更時のセレクタ復旧用） |
 | `npm test` | 配信判定ロジック（`src/logic.ts`）の単体テスト |
 | `npm run typecheck` | `tsc --noEmit` で型チェック（src + test） |
 

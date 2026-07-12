@@ -76,7 +76,10 @@ export async function ensureTopic(customerKey: string, name: string): Promise<nu
   return topic.message_thread_id;
 }
 
-/** 顧客の発言を該当トピックへ（4096字制限があるため分割送信） */
+/** 顧客の発言を該当トピックへ（4096字制限があるため分割送信）。
+ * 意図的な非対称: sendMessage はネットワーク断/5xx でも再試行する（応答喪失時は同一メッセージが
+ * トピックに二重表示され得るが、表示重複は消失より害が小さい）。createForumTopic は逆に
+ * 再試行しない（重複トピック＝返信喪失の温床になるため）。 */
 export async function pushInbound(threadId: number, text: string): Promise<void> {
   if (!text) return; // 空文字は Telegram が 400 で拒否する
   const CHUNK = 4000;
