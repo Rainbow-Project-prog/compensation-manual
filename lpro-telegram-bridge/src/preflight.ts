@@ -9,9 +9,13 @@ import { createRequire } from 'node:module';
 
 const REQUIRED_ENV = [
   'TELEGRAM_BOT_TOKEN',
-  'GROUP_CHAT_ID',
   'LPRO_LOGIN_URL',
-  'LPRO_TALK_URL',
+] as const;
+
+// 各受信箱は「URL と グループID の両方」が揃って有効。少なくとも1つは必要
+const INBOX_ENV = [
+  { name: 'チャット応対', url: 'CHAT_TALK_URL', group: 'CHAT_GROUP_CHAT_ID' },
+  { name: 'ダイレクトトーク応対', url: 'TALK_TALK_URL', group: 'TALK_GROUP_CHAT_ID' },
 ] as const;
 
 export type PreflightResult = { problems: string[]; warnings: string[] };
@@ -39,18 +43,33 @@ export function runDoctor(): PreflightResult {
       problems.push(`環境変数 ${k} が未設定/プレースホルダのままです`);
     }
   }
+  // 受信箱の設定: 少なくとも1つは URL+グループID が揃っていること。
+  // 片方だけ設定されている（URL有・グループ無 など）は設定ミスとして弾く
+  let enabledInboxes = 0;
+  let anyTalkUnderManage = false;
+  for (const ib of INBOX_ENV) {
+    const url = (process.env[ib.url] ?? '').trim();
+    const grp = (process.env[ib.group] ?? '').trim();
+    if (url && grp) {
+      enabledInboxes++;
+      if (/\/manage(\/|$|\?)/.test(url)) anyTalkUnderManage = true;
+      if (Number.isNaN(Number(grp)) || Number(grp) === 0) {
+        problems.push(`${ib.group} が数値ではありません（npm run chatid で取得した -100... を入れる）: ${grp}`);
+      }
+    } else if (url || grp) {
+      problems.push(`${ib.name} の設定が片方だけです（${ib.url} と ${ib.group} は両方必要、または両方空）`);
+    }
+  }
+  if (enabledInboxes === 0) {
+    problems.push('有効な受信箱がありません（CHAT_TALK_URL+CHAT_GROUP_CHAT_ID か TALK_TALK_URL+TALK_GROUP_CHAT_ID の少なくとも一方を設定）');
+  }
+
   // Lpro の /manage はベーシック認証で保護されているため、認証情報が無いと起動できない。
   // 認証は Cookie と違いプロファイルに永続しないため、環境変数からの供給が必須
-  const talk = process.env.LPRO_TALK_URL ?? '';
-  if (/\/manage(\/|$|\?)/.test(talk) && !process.env.LPRO_BASIC_USER) {
+  if (anyTalkUnderManage && !process.env.LPRO_BASIC_USER) {
     problems.push('LPRO_BASIC_USER / LPRO_BASIC_PASS が未設定です（/manage は HTTP ベーシック認証で保護されています）');
   }
 
-  // GROUP_CHAT_ID は数値（-100...）であること
-  const gid = process.env.GROUP_CHAT_ID;
-  if (gid && gid.trim() !== '' && Number.isNaN(Number(gid))) {
-    problems.push(`GROUP_CHAT_ID が数値ではありません（npm run chatid で取得した -100... を入れる）: ${gid}`);
-  }
   // 数値系はタイプミス（NaN）が「初回メッセージの無音喪失」「ウェイトなし巡回」に直結するため事前に弾く
   for (const k of ['POLL_INTERVAL_MS', 'BOOTSTRAP_TAIL'] as const) {
     const raw = process.env[k];

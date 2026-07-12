@@ -1,13 +1,16 @@
 import { chromium, type BrowserContext, type Page, type Frame, type Locator } from 'playwright';
 import { createHash } from 'node:crypto';
-import { cfg, SELECTORS, httpCredentials } from './config.js';
+import { cfg, SELECTORS, httpCredentials, inboxes, type Inbox } from './config.js';
 
-export type Conversation = { customerKey: string; name: string; unread: boolean };
+/** conv.memberId は Lpro の会員ID（受信箱に依らず顧客不変）。DBキーは inbox 込みで index.ts が合成 */
+export type Conversation = { memberId: string; name: string; unread: boolean };
 /** hash はフィンガープリント（会員ID+日時+本文+同文連番）。重複配信・取りこぼし防止の要 */
 export type InboundMsg = { text: string; hash: string };
 
 let ctx: BrowserContext | null = null;
 let page: Page | null = null;
+// いま main iframe に読み込んでいる受信箱（不要な再ナビゲーションを避ける）
+let currentInboxId: string | null = null;
 
 const warned = new Set<string>();
 function warnOnce(key: string, msg: string): void {
@@ -21,23 +24,29 @@ function clean(s: string | null | undefined): string {
 }
 
 export async function initBrowser(): Promise<void> {
+  if (inboxes.length === 0) {
+    throw new Error(
+      '有効な受信箱がありません（.env の CHAT_TALK_URL+CHAT_GROUP_CHAT_ID か ' +
+      'TALK_TALK_URL+TALK_GROUP_CHAT_ID を設定してください）。`npm run doctor` で確認できます'
+    );
+  }
   // 再初期化（クラッシュ復旧）に備えて既存コンテキストは先に閉じる
   if (ctx) await closeBrowser();
   ctx = await chromium.launchPersistentContext(cfg.userDataDir, {
     headless: cfg.headless,
     viewport: { width: 1400, height: 950 },
     // /manage の HTTP ベーシック認証（realm "InfoSys Manager"）に自動応答する。
-    // 未設定なら undefined（従来どおり）で、その場合はページ側の認証ダイアログに手動対応が必要
     httpCredentials: httpCredentials(),
     // Ctrl+C / kill の終了処理は index.ts の shutdown() が担う。Playwright 既定のシグナルハンドラは
     // ブラウザを閉じた直後に process.exit してしまい、返信の排水・bot停止・DBクローズを先取りで打ち切る
-    // （プロセス終了時の chromium の後始末は Playwright の exit ハンドラが引き続き行う）
     handleSIGINT: false,
     handleSIGTERM: false,
     handleSIGHUP: false,
   });
   page = ctx.pages()[0] ?? (await ctx.newPage());
-  await ensureLoggedIn();
+  currentInboxId = null;
+  // 最初の受信箱でログイン確認（複数受信箱でもログインは共通のセッション）
+  await ensureLoggedIn(inboxes[0]);
 }
 
 /** 終了時に呼ぶ。ブラウザ（永続コンテキスト）を閉じる */
@@ -45,6 +54,7 @@ export async function closeBrowser(): Promise<void> {
   try { await ctx?.close(); } catch { /* already closed */ }
   ctx = null;
   page = null;
+  currentInboxId = null;
 }
 
 /** ブラウザ/ページが閉じられた・クラッシュした系のエラーか（復旧判定用） */
@@ -58,52 +68,53 @@ export function pageGone(): boolean {
   return !page || page.isClosed();
 }
 
-/**
- * 顧客行テーブルの iframe（chatframe）を探す。
- * talkUrl を直接開いた場合（chat_message?method=frame）は1段、
- * /manage/ シェル経由なら main → chatframe の2段になるが、
- * Playwright の frames() はフラットに列挙するので name で拾えばどちらでも動く。
- */
-function findChatFrame(): Frame | null {
+/** 指定受信箱の顧客行 iframe（name=chatframe かつ URL がその受信箱のもの）を探す */
+function findChatFrame(inbox: Inbox): Frame | null {
   const p = page;
   if (!p || p.isClosed()) return null;
   for (const f of p.frames()) {
-    if (f.name() === 'chatframe' || /\/chat_message(?:\?(?!.*method=frame)|$)/.test(f.url())) return f;
+    if (f.name() === 'chatframe' && inbox.chatframeRe.test(f.url())) return f;
+    // フォールバック: name が付く前でも URL で判別（chat と linechat を取り違えない正規表現）
+    if (inbox.chatframeRe.test(f.url()) && f.url() !== inbox.talkUrl) return f;
   }
   return null;
 }
 
-async function waitForChatFrame(timeoutMs: number): Promise<Frame | null> {
+/**
+ * 指定受信箱の画面を（必要なら）開き、顧客行 iframe が現れるまで待つ。
+ * 別の受信箱を表示中、または未表示なら talkUrl へナビゲートする。
+ */
+async function gotoInbox(inbox: Inbox, timeoutMs = 20_000): Promise<Frame> {
+  const p = page!;
+  if (currentInboxId !== inbox.id || !findChatFrame(inbox)) {
+    await p.goto(inbox.talkUrl, { waitUntil: 'domcontentloaded' });
+    currentInboxId = inbox.id;
+  }
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const f = findChatFrame();
+    const f = findChatFrame(inbox);
     if (f) {
-      // フレームは在っても中身が空のことがあるので、行テーブルの出現まで確認する
       const ok = await f
         .waitForSelector(SELECTORS.conversationItem, { timeout: Math.max(1000, deadline - Date.now()), state: 'attached' })
         .then(() => true)
         .catch(() => false);
       if (ok) return f;
-      return findChatFrame(); // 行ゼロでもフレームがあれば返す（空一覧は呼び出し側で扱う）
+      return f; // 行ゼロでもフレームがあれば返す（空一覧は呼び出し側で扱う）
     }
-    await page!.waitForTimeout(500);
+    await p.waitForTimeout(500);
   }
-  return null;
+  throw new Error(`${inbox.name}: トーク画面（chatframe）が表示されません（セッション切れの疑い）`);
 }
 
-/** chatframe を必須で取得。無ければセッション切れ/未ログインとして throw（復旧経路へ） */
-function requireChatFrame(): Frame {
-  const f = findChatFrame();
-  if (!f) throw new Error('トーク画面（chatframe）が見つかりません（セッション切れ/画面遷移の疑い）');
-  return f;
-}
-
-export async function ensureLoggedIn(): Promise<void> {
+export async function ensureLoggedIn(inbox: Inbox = inboxes[0]): Promise<void> {
   const p = page!;
-  await p.goto(cfg.talkUrl, { waitUntil: 'domcontentloaded' });
+  await p.goto(inbox.talkUrl, { waitUntil: 'domcontentloaded' });
+  currentInboxId = inbox.id;
   // トーク画面が出ればログイン済み。未ログインならログインページへリダイレクトされ chatframe は現れない
-  let f = await waitForChatFrame(15_000);
-  if (!f) {
+  let ok = await findChatFrame(inbox)
+    ? true
+    : await gotoInbox(inbox, 15_000).then(() => true).catch(() => false);
+  if (!ok) {
     if (cfg.headless) {
       throw new Error(
         '未ログインですが HEADLESS=true のため手動ログインできません。' +
@@ -112,39 +123,28 @@ export async function ensureLoggedIn(): Promise<void> {
     }
     console.log('未ログインの可能性。表示中のブラウザでログイン（2FA含む）してください。最大5分待機…');
     await p.goto(cfg.loginUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
-    // ログイン完了はシェルのログアウトメニュー（loggedInMarker）またはトーク画面の出現で判定
     const deadline = Date.now() + 300_000;
-    let ok = false;
     while (Date.now() < deadline && !ok) {
-      ok =
-        (await p.locator(SELECTORS.loggedInMarker).first().isVisible().catch(() => false)) ||
-        findChatFrame() !== null;
+      ok = await p.locator(SELECTORS.loggedInMarker).first().isVisible().catch(() => false);
       if (!ok) await p.waitForTimeout(2000);
     }
     if (!ok) throw new Error('5分以内にログインを確認できませんでした');
-    await p.goto(cfg.talkUrl, { waitUntil: 'domcontentloaded' });
-    f = await waitForChatFrame(30_000);
-    if (!f) throw new Error('ログイン後もトーク画面（chatframe）を表示できませんでした');
+    await gotoInbox(inbox, 30_000);
   }
-  console.log('Lpro ログイン確認OK（トーク画面表示）');
+  console.log(`Lpro ログイン確認OK（${inbox.name}）`);
 }
 
 /** 行スキャン結果（frame.evaluate で一括抽出する軽量DTO） */
 type RowScan = { key: string; name: string; status: string };
 
-let lastLoggedCounts = '';
+const lastLoggedCounts = new Map<string, string>();
 
 /**
- * 会話（顧客行）一覧を取得。毎回 talkUrl を開き直して最新の描画を読む。
+ * 指定受信箱の顧客行一覧を取得。毎回開き直して最新の描画を読む。
  * 一括返信行（会員ID無し）はここで除外される。
  */
-export async function pollConversations(): Promise<Conversation[]> {
-  const p = page!;
-  await p.goto(cfg.talkUrl, { waitUntil: 'domcontentloaded' });
-  const f = await waitForChatFrame(20_000);
-  if (!f) {
-    throw new Error('トーク画面（chatframe）が表示されません（セッション切れの疑い）');
-  }
+export async function pollConversations(inbox: Inbox): Promise<Conversation[]> {
+  const f = await gotoInbox(inbox, 20_000);
   const rows: RowScan[] = await f.evaluate(
     (S) => {
       const out: Array<{ key: string; name: string; status: string }> = [];
@@ -166,61 +166,54 @@ export async function pollConversations(): Promise<Conversation[]> {
     }
   );
   if (rows.length === 0) {
-    warnOnce('empty-list', '顧客行が0件です。conversationItem セレクタと表示フィルタを確認してください。');
+    warnOnce(`empty-list-${inbox.id}`, `${inbox.name}: 顧客行が0件です。conversationItem セレクタと表示フィルタを確認してください。`);
   }
   const out = rows.map((r) => {
-    // 未読判定は安全側に倒す: 「未返信」を含む、または「返信済」を含まない未知の状態は未読扱い
-    // （dump 時点では全行「返信済み」で未返信の実表記が未検証のため。誤判定しても
-    //   フィンガープリント台帳があるので重複配信にはならず、読み込みが増えるだけ）
+    // 未読判定は安全側: 「未返信」を含む、または「返信済」を含まない未知の状態は未読扱い
     const unread =
       r.status === ''
         ? true
         : r.status.includes(SELECTORS.unreadText) || !r.status.includes('返信済');
     if (r.status === '') {
-      warnOnce('empty-status', '返信状態セル（statusCell）が空の行があります。安全のため未読扱いにします。');
+      warnOnce(`empty-status-${inbox.id}`, `${inbox.name}: 返信状態セルが空の行があります。安全のため未読扱いにします。`);
     }
-    return { customerKey: r.key, name: r.name || `ID:${r.key}`, unread };
+    return { memberId: r.key, name: r.name || `ID:${r.key}`, unread };
   });
-  // 未読0件が続く無音障害を観測できるよう、件数が変わった時だけログに出す
   const counts = `${out.length}行/未読${out.filter((o) => o.unread).length}件`;
-  if (counts !== lastLoggedCounts) {
-    lastLoggedCounts = counts;
-    console.log(`巡回: ${counts}`);
+  if (lastLoggedCounts.get(inbox.id) !== counts) {
+    lastLoggedCounts.set(inbox.id, counts);
+    console.log(`巡回[${inbox.name}]: ${counts}`);
   }
   return out;
 }
 
-/** トーク画面を開き直して最新の描画にする（返信後の即時取り込み等、goto を伴わない読み取りの前に呼ぶ） */
-export async function refreshTalkView(): Promise<void> {
-  const p = page!;
-  await p.goto(cfg.talkUrl, { waitUntil: 'domcontentloaded' });
-  const f = await waitForChatFrame(20_000);
-  if (!f) throw new Error('トーク画面（chatframe）が表示されません（セッション切れの疑い）');
+/** トーク画面を開き直して最新の描画にする（返信後の即時取り込み等の前に呼ぶ） */
+export async function refreshTalkView(inbox: Inbox): Promise<void> {
+  currentInboxId = null; // 強制的に再ナビゲートさせる
+  await gotoInbox(inbox, 20_000);
 }
 
 /**
  * 会員IDで顧客行を特定する（★誤配信防止の要★）。
  * 行スコープの Locator を返す前に、行内の会員ID表示が要求キーと完全一致することを検証する。
- * 見つからない場合は throw（現在の表示（最新100件）に含まれない顧客には送れない）。
  */
-async function findRow(f: Frame, customerKey: string): Promise<Locator> {
+async function findRow(f: Frame, memberId: string, inbox: Inbox): Promise<Locator> {
   const row = f
     .locator(SELECTORS.conversationItem)
-    .filter({ has: f.locator(SELECTORS.memberIdText).getByText(customerKey, { exact: true }) });
+    .filter({ has: f.locator(SELECTORS.memberIdText).getByText(memberId, { exact: true }) });
   const n = await row.count();
   if (n === 0) {
     throw new Error(
-      `顧客行が見つかりません（会員ID=${customerKey}）。表示中の一覧（最新100件）に含まれていない可能性があります。` +
+      `${inbox.name}: 顧客行が見つかりません（会員ID=${memberId}）。表示中の一覧（最新100件）に含まれていない可能性があります。` +
       'Lpro の画面から直接返信してください。'
     );
   }
   if (n > 1) {
-    // 会員IDは一意のはず。万一複数一致したら誤配信リスクなので送らない
-    throw new Error(`会員ID=${customerKey} に一致する行が複数（${n}件）あります。安全のため操作を中止しました`);
+    throw new Error(`${inbox.name}: 会員ID=${memberId} に一致する行が複数（${n}件）あります。安全のため操作を中止しました`);
   }
   const shown = clean(await row.locator(SELECTORS.memberIdText).first().textContent());
-  if (shown !== customerKey) {
-    throw new Error(`行の同一性検証に失敗（要求=${customerKey} 表示=${shown}）。安全のため操作を中止しました`);
+  if (shown !== memberId) {
+    throw new Error(`${inbox.name}: 行の同一性検証に失敗（要求=${memberId} 表示=${shown}）。安全のため操作を中止しました`);
   }
   return row;
 }
@@ -230,12 +223,11 @@ type MsgScan = { inbound: boolean; text: string; dt: string; hasImage: boolean }
 
 /**
  * 顧客行の会話履歴から「顧客の発言」をフィンガープリント付きで取得。
- * 表示されるのは直近数件のみ（履歴の窓）だが、新着は必ず窓の末尾に現れるため
- * ハッシュの未見分だけを配信すれば取りこぼし・重複配信は起きない。
+ * ハッシュには受信箱IDも混ぜる（同じ会員IDが両受信箱に居ても取り違えない）。
  */
-export async function readInbound(conv: Conversation): Promise<InboundMsg[]> {
-  const f = requireChatFrame();
-  const row = await findRow(f, conv.customerKey);
+export async function readInbound(inbox: Inbox, conv: Conversation): Promise<InboundMsg[]> {
+  const f = await gotoInbox(inbox, 20_000);
+  const row = await findRow(f, conv.memberId, inbox);
   const scans: MsgScan[] = await row.evaluate(
     (rowEl, S) => {
       const out: Array<{ inbound: boolean; text: string; dt: string; hasImage: boolean }> = [];
@@ -263,20 +255,14 @@ export async function readInbound(conv: Conversation): Promise<InboundMsg[]> {
 
   const res: InboundMsg[] = [];
   const dupCount = new Map<string, number>();
-  // ★実DOMは新→旧（最新が先頭）で並ぶ（dump全100行で確認）。時系列昇順（古→新）に
-  // 直してから処理する。logic.ts の「新着は末尾」前提・Telegram への配信順・
-  // 同文連番の付与順は、すべてこの向きに依存する
+  // ★実DOMは新→旧（最新が先頭）で並ぶ。時系列昇順（古→新）に直してから処理する
   for (const m of [...scans].reverse()) {
     if (!m.inbound) continue;
-    // スタンプ・画像のみのメッセージも「来たこと」は伝える（無音で消すと顧客の連絡自体に気付けない）
     const text = m.text || (m.hasImage ? '[画像/スタンプ]（本文なし。Lproで確認してください）' : '');
     if (!text) continue;
     const base = createHash('sha1')
-      .update(`${conv.customerKey}|${m.dt}|${text}`)
+      .update(`${inbox.id}|${conv.memberId}|${m.dt}|${text}`)
       .digest('hex');
-    // 同一日時・同一本文の連投を別メッセージとして扱うための連番（時系列昇順で付与）。
-    // 既知の限界: 同分・同文の連投が表示窓のズレで分断されると連番が繰り上がって
-    // 既知ハッシュと衝突し、後発分が届かないことがある（稀な連投に限る抑止方向の誤り）
     const n = dupCount.get(base) ?? 0;
     dupCount.set(base, n + 1);
     res.push({ text, hash: n === 0 ? base : `${base}:${n}` });
@@ -285,35 +271,26 @@ export async function readInbound(conv: Conversation): Promise<InboundMsg[]> {
 }
 
 /**
- * 返信を送信し、成功を検証する。
- * - 行は会員IDで特定し（findRow が同一性検証済み）、入力・クリックはその行スコープのみ。
- *   ページ先頭の「一括返信」フォームには構造上届かない。
- * - 送信成功の検証: クリック後に「入力欄が空になる」か「自分側の吹き出しが1つ増える」の
- *   いずれかを最大10秒待つ。確認できなければ throw（呼び出し側が⚠️通知を出す）。
+ * 返信を送信し、成功を検証する。行は会員IDで特定し（findRow が同一性検証済み）、
+ * 入力・クリックはその行スコープのみ。ページ先頭の「一括返信」フォームには構造上届かない。
  */
-export async function sendReply(customerKey: string, _name: string, text: string): Promise<void> {
+export async function sendReply(inbox: Inbox, memberId: string, text: string): Promise<void> {
   const p = page!;
-  const f = requireChatFrame();
-  const row = await findRow(f, customerKey);
+  const f = await gotoInbox(inbox, 20_000);
+  const row = await findRow(f, memberId, inbox);
   const input = row.locator(SELECTORS.replyInput).first();
   await input.fill(text);
 
   const outboundGroups = row.locator(`${SELECTORS.messageGroup}:not(.${SELECTORS.inboundGroupClass})`);
   const rightBefore = await outboundGroups.count();
-  // 第3の成功シグナル用: 「送った本文を含む自分側吹き出し」の出現数を送信前後で比較する
   const probe = clean(text).slice(0, 30);
   const probeBefore = probe ? await outboundGroups.filter({ hasText: probe }).count().catch(() => 0) : 0;
 
-  // 送信ボタンが confirm ダイアログを出す実装だった場合に備える（出なければ何もしない）
   const onDialog = (d: import('playwright').Dialog) => { void d.accept().catch(() => {}); };
   p.once('dialog', onDialog);
   try {
     await row.locator(SELECTORS.sendButton).first().click();
 
-    // 成功シグナル3種のいずれかを最大10秒待つ:
-    // (1) 入力欄が空になった (2) 自分側吹き出しの数が増えた (3) 送った本文を含む自分側吹き出しが増えた
-    // ※ 送信ハンドラ（js/mailbox.js）の実挙動は静的DOMから確定できないため、
-    //   初回の実機送信テストで「どのシグナルで成功判定されたか」をログで確認すること
     const deadline = Date.now() + 10_000;
     while (Date.now() < deadline) {
       const cleared = (await input.inputValue().catch(() => text)) === '';
@@ -321,14 +298,14 @@ export async function sendReply(customerKey: string, _name: string, text: string
       const probeNow = probe ? await outboundGroups.filter({ hasText: probe }).count().catch(() => probeBefore) : probeBefore;
       if (cleared || rightNow > rightBefore || probeNow > probeBefore) {
         console.log(
-          `送信確認OK（シグナル: ${cleared ? '入力欄クリア' : rightNow > rightBefore ? '吹き出し増加' : '本文一致'}）`
+          `送信確認OK[${inbox.name}]（シグナル: ${cleared ? '入力欄クリア' : rightNow > rightBefore ? '吹き出し増加' : '本文一致'}）`
         );
         return;
       }
       await p.waitForTimeout(500);
     }
     throw new Error(
-      '送信を確認できませんでした（入力欄が残ったまま/送信済み吹き出しが増えない）。' +
+      `${inbox.name}: 送信を確認できませんでした（入力欄が残ったまま/送信済み吹き出しが増えない）。` +
       '⚠️ 実際には送信されている可能性もあります。再送する前に必ず Lpro の画面で確認してください'
     );
   } finally {

@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS customers (
   customer_key    TEXT PRIMARY KEY,
   name            TEXT,
   topic_thread_id INTEGER,
+  group_chat_id   INTEGER,
   bootstrapped    INTEGER NOT NULL DEFAULT 0,
   seen_count      INTEGER NOT NULL DEFAULT 0,
   created_at      INTEGER NOT NULL
@@ -39,10 +40,14 @@ CREATE TABLE IF NOT EXISTS pending_replies (
 );
 `);
 
+// 旧スキーマ（group_chat_id 列が無い）からの移行。列が既にあれば無視される
+try { db.exec('ALTER TABLE customers ADD COLUMN group_chat_id INTEGER'); } catch { /* already exists */ }
+
 export type Customer = {
   customer_key: string;
   name: string | null;
   topic_thread_id: number | null;
+  group_chat_id: number | null;
   bootstrapped: number;
   seen_count: number;
 };
@@ -55,20 +60,25 @@ export const dbApi = {
       `INSERT INTO customers (customer_key,name,created_at) VALUES (?,?,?)
        ON CONFLICT(customer_key) DO UPDATE SET name=excluded.name`
     ).run(key, name, Date.now()),
-  // upsert形: 行が無い状態で呼ばれても紐付けを失わない（クラッシュ時の重複トピック防止）
-  setTopic: (key: string, threadId: number) =>
+  // upsert形: 行が無い状態で呼ばれても紐付けを失わない（クラッシュ時の重複トピック防止）。
+  // group_chat_id も保存する（スレッドIDはグループ内でのみ一意なので、返信の宛先解決に必須）
+  setTopic: (key: string, threadId: number, groupChatId: number) =>
     db.prepare(
-      `INSERT INTO customers (customer_key, topic_thread_id, created_at) VALUES (?,?,?)
-       ON CONFLICT(customer_key) DO UPDATE SET topic_thread_id=excluded.topic_thread_id`
-    ).run(key, threadId, Date.now()),
+      `INSERT INTO customers (customer_key, topic_thread_id, group_chat_id, created_at) VALUES (?,?,?,?)
+       ON CONFLICT(customer_key) DO UPDATE SET topic_thread_id=excluded.topic_thread_id,
+         group_chat_id=excluded.group_chat_id`
+    ).run(key, threadId, groupChatId, Date.now()),
   // トピックが削除されていた場合に紐付けを外す（次回配信時に作り直す）
   clearTopic: (key: string) =>
     db.prepare('UPDATE customers SET topic_thread_id=NULL WHERE customer_key=?').run(key),
   setSeen: (key: string, count: number, bootstrapped = 1) =>
     db.prepare('UPDATE customers SET seen_count=?, bootstrapped=? WHERE customer_key=?')
       .run(count, bootstrapped, key),
-  byThread: (threadId: number) =>
-    db.prepare('SELECT * FROM customers WHERE topic_thread_id=?').get(threadId) as Customer | undefined,
+  // 返信の宛先解決: スレッドIDはグループ内でのみ一意なので、必ずグループでも絞る
+  // （2グループ運用で thread_id が偶然一致しても別顧客に誤配信しないため）
+  byThread: (groupChatId: number, threadId: number) =>
+    db.prepare('SELECT * FROM customers WHERE group_chat_id=? AND topic_thread_id=?')
+      .get(groupChatId, threadId) as Customer | undefined,
   // GROUP_CHAT_ID 変更検知用（旧グループのスレッドIDは新グループの別トピックと衝突し誤配信の温床になる）
   getMeta: (key: string) =>
     (db.prepare('SELECT value FROM meta WHERE key=?').get(key) as { value: string } | undefined)?.value,
@@ -77,7 +87,9 @@ export const dbApi = {
       `INSERT INTO meta (key,value) VALUES (?,?)
        ON CONFLICT(key) DO UPDATE SET value=excluded.value`
     ).run(key, value),
-  clearAllTopics: () => db.prepare('UPDATE customers SET topic_thread_id=NULL').run(),
+  // 指定グループに紐付いたトピックだけリセット（そのグループの GROUP_CHAT_ID 変更時）
+  clearTopicsByGroup: (groupChatId: number) =>
+    db.prepare('UPDATE customers SET topic_thread_id=NULL WHERE group_chat_id=?').run(groupChatId),
   // ── フィンガープリント台帳 ──
   hasSeen: (key: string, hash: string) =>
     db.prepare('SELECT 1 FROM seen_messages WHERE customer_key=? AND hash=?').get(key, hash) !== undefined,

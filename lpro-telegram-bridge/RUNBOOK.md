@@ -17,11 +17,13 @@
 1. **どのセレクタが死んだか切り分ける**
    `HEADLESS=false` で `npm start` し、ブラウザで実際の画面を見る。
    - 「トーク画面（chatframe）が見つかりません」が出続ける → `mainFrame` / `chatFrame`（iframe構造の変化）
-     または LPRO_TALK_URL（chat_message?method=frame）の変更
+     または該当受信箱の talk URL（`CHAT_TALK_URL` = chat_message?method=frame /
+     `TALK_TALK_URL` = linechat_message_frame）の変更。どの受信箱で出ているかはログの受信箱名で分かる
    - 顧客行が0件 → `conversationItem`（tr.rowitem）
    - **一覧は取れるのに新着が全く配信されない** → `statusCell` / `unreadText`（未知の状態表記は安全側で未読扱いになる。
      ただし `statusCell` が「返信済」を含む場合のみ未読なし扱いなので、「返信済」の表記が変わった場合は全行が
-     未読扱いになり巡回が重くなる。ログの「巡回: N行/未読M件」で気付ける）
+     未読扱いになり巡回が重くなる。ログの「巡回[チャット応対]: N行/未読M件」/「巡回[ダイレクトトーク応対]: …」で
+     気付ける。ログには受信箱名が付くのでどちらの受信箱の話か見分けられる）
    - 顧客が「スキップ」され続ける → `memberIdText`（会員ID要素）
    - 名前が変 → `customerName`
    - メッセージが拾えない → `messageGroup` / `inboundGroupClass` / `bubble` / `msgDatetime`
@@ -48,8 +50,8 @@
 `createForumTopic` が 400 で失敗する場合、コードが下記を促すエラーを出す:
 
 1. グループの **Topics が ON** か
-2. bot が**管理者**で「**トピックの管理 (Manage Topics)**」権限を持つか
-3. `GROUP_CHAT_ID` が正しいか（`npm run chatid` で取り直す。`-100...` の数値）
+2. bot が**管理者**で「**トピックの管理 (Manage Topics)**」権限を持つか（bot は両グループそれぞれに追加する）
+3. 該当受信箱のグループID（`CHAT_GROUP_CHAT_ID` / `TALK_GROUP_CHAT_ID`）が正しいか（`npm run chatid` で取り直す。`-100...` の数値。エラーには受信箱名が付くのでどちらのグループか分かる）
 
 429（レート制限）や 5xx・ネットワーク断は自動でリトライ（指数バックオフ）するので、基本は放置で回復する。
 ただし**トピック作成（createForumTopic）だけはネットワーク断・5xx では意図的に再試行しない**
@@ -80,6 +82,9 @@ retry_after を待って再試行する）。作成失敗は次の配信サイ�
   `.mmsgdt` の中身が変化していないか(A-1 の `msgDatetime`)を確認。
 - 新着が来ない場合: `statusCell`/`unreadText`(未返信判定)を確認。`ONLY_UNREAD=false` にすると
   全行を毎回読むので、未返信判定が壊れていても届くようになる(重い・既読台帳があるので安全)。
+  なお受信箱は2つ(チャット応対/ダイレクトトーク応対)あり、どちらの巡回の話かはログの
+  「巡回[受信箱名]: N行/未読M件」で見分けられる。片方だけ来ない場合は、その受信箱の
+  `*_TALK_URL`/`*_GROUP_CHAT_ID` が両方設定されて有効になっているか(`npm run doctor`)も確認する。
 - 顧客1人に**トピックが複数できる**ことは起きない設計(キー=会員ID固定)。起きたら `memberIdText` を確認。
 - 配信判定そのものは `src/logic.ts`(`decideDeliveryBySeen`)に分離済み。挙動を変えるときは
   まず `test/logic.test.ts` にケースを足してから直すと安全。
@@ -118,8 +123,9 @@ retry_after を待って再試行する）。作成失敗は次の配信サイ�
 - 強制終了して `bridge.db-wal` / `.lpro-profile` が壊れた疑いがあるとき:
   - `.lpro-profile` を消すと**再ログインが必要**（消すのは最終手段）。
   - `bridge.db` を消すと**全顧客が初回ブートストラップ扱い**になり、既存トピックとの紐付けが切れる。原則消さない。
-  - `GROUP_CHAT_ID` を変更すると、起動時に旧グループ向けのトピック紐付けは自動で全リセットされ、
-    次回配信時に新グループへ作り直される（旧グループのトピックはそのまま残る）。
+  - `CHAT_GROUP_CHAT_ID` / `TALK_GROUP_CHAT_ID` を変更すると、起動時に**受信箱ごとに変更を検知**し、
+    その受信箱の旧グループに紐付いたトピックだけを自動リセット（`clearTopicsByGroup`）して、
+    次回配信時に新グループへ作り直す（旧グループのトピックはそのまま残る。もう一方の受信箱のトピックは影響を受けない）。
 
 ---
 

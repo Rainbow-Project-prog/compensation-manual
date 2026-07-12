@@ -43,7 +43,9 @@ npx playwright install chromium
 
 # 2) .env を用意
 cp .env.example .env
-#    TELEGRAM_BOT_TOKEN / LPRO_LOGIN_URL / LPRO_TALK_URL を記入
+#    TELEGRAM_BOT_TOKEN / LPRO_LOGIN_URL / LPRO_BASIC_USER / LPRO_BASIC_PASS と、
+#    受信箱ごとの CHAT_TALK_URL・CHAT_GROUP_CHAT_ID（＋使うなら TALK_TALK_URL・TALK_GROUP_CHAT_ID）を記入
+#    （各受信箱は URL とグループID の両方が揃うと有効。少なくとも1つ必要）
 
 #    （完了済み）SELECTORS は 2026-07-11 の実機DOM（npm run dump）で確定済み。
 #    通常は編集不要（Lpro の UI 変更時のみ RUNBOOK A 参照）。
@@ -52,8 +54,10 @@ cp .env.example .env
 npm run login
 
 # 4) Telegram グループの chat_id を取得（※ブリッジ本体と同時実行しない）
+#    受信箱ごとにグループを作り、同じ bot を両方に管理者（トピック管理権限）で追加しておく
 npm run chatid
-#    表示された -100... を .env の GROUP_CHAT_ID に記入
+#    各グループの chat_id を取得し、チャット応対グループのIDを CHAT_GROUP_CHAT_ID、
+#    ダイレクトトーク応対グループのIDを TALK_GROUP_CHAT_ID に記入
 
 # 5) 事前チェック → 本起動
 npm run doctor
@@ -87,6 +91,10 @@ pm2 save
 
 ## 動作の要点
 
+- **2受信箱＝2グループ**: Lpro には独立した2つの受信箱がある。①チャット応対（自動応答なし・全部手動）
+  ②ダイレクトトーク応対（基本は自動応答だが取りこぼしを拾う）。それぞれ **別の Telegram グループ**へ配信し、
+  返信は必ず元の受信箱・元のグループへ戻る（顧客キーは内部で `受信箱ID:会員ID`）。使う受信箱だけ
+  `CHAT_*` / `TALK_*` を設定すればよい（両方でも片方でも可、最低1つ）。
 - **起動時ブートストラップ**: 全会話の既読基準を最初に記録（過去ログは配らない）。
   ただし**未読の未登録会話**は既読化せず巡回に委ねる（停止中に届いた初回接触メッセージを消さないため）。
 - **稼働中・停止中の新規顧客**: 末尾 `BOOTSTRAP_TAIL` 件（既定5）だけ配信して初回メッセージの取りこぼしを防ぐ。

@@ -1,5 +1,5 @@
 import { Bot, GrammyError, HttpError } from 'grammy';
-import { cfg } from './config.js';
+import { cfg, inboxes } from './config.js';
 import { dbApi } from './db.js';
 
 export const bot = new Bot(cfg.telegramToken);
@@ -9,7 +9,10 @@ bot.catch((err) => {
   console.error('Telegram ハンドラでエラー（処理は継続します）:', err.error ?? err);
 });
 
-type ReplyHandler = (customerKey: string, name: string, text: string) => void;
+// 有効な受信箱グループの集合（このグループ以外からのメッセージは無視）
+const KNOWN_GROUPS = new Set(inboxes.map((i) => i.groupChatId));
+
+type ReplyHandler = (inboxId: string, memberId: string, name: string, text: string) => void;
 let onReply: ReplyHandler = () => {};
 export function setReplyHandler(h: ReplyHandler) { onReply = h; }
 
@@ -47,15 +50,16 @@ async function withRetry<T>(
   throw lastErr;
 }
 
-/** 顧客ごとのトピックを確保（無ければ作成）。配信直前にだけ呼ぶ（空トピックの量産防止） */
-export async function ensureTopic(customerKey: string, name: string): Promise<number> {
+/** 顧客ごとのトピックを確保（無ければ作成）。配信直前にだけ呼ぶ（空トピックの量産防止）。
+ * トピックは受信箱ごとのグループ（groupChatId）に作る。 */
+export async function ensureTopic(customerKey: string, name: string, groupChatId: number): Promise<number> {
   const existing = dbApi.get(customerKey);
   if (existing?.topic_thread_id) return existing.topic_thread_id;
   let topic;
   try {
     topic = await withRetry(
       'createForumTopic',
-      () => bot.api.createForumTopic(cfg.groupChatId, name || customerKey),
+      () => bot.api.createForumTopic(groupChatId, name || customerKey),
       // 非冪等: ネットワーク断（HttpError）もコミット後 5xx 応答も再試行すると重複トピックを生む
       { retryOnHttpError: false, retryOn5xx: false }
     );
@@ -71,8 +75,8 @@ export async function ensureTopic(customerKey: string, name: string): Promise<nu
     throw e;
   }
   // 作成→DB永続化の間のクラッシュで生まれる孤児トピックを診断できるよう、必ずログに残す
-  console.log(`トピック作成: thread=${topic.message_thread_id} key=${customerKey}`);
-  dbApi.setTopic(customerKey, topic.message_thread_id);
+  console.log(`トピック作成: group=${groupChatId} thread=${topic.message_thread_id} key=${customerKey}`);
+  dbApi.setTopic(customerKey, topic.message_thread_id, groupChatId);
   return topic.message_thread_id;
 }
 
@@ -80,7 +84,7 @@ export async function ensureTopic(customerKey: string, name: string): Promise<nu
  * 意図的な非対称: sendMessage はネットワーク断/5xx でも再試行する（応答喪失時は同一メッセージが
  * トピックに二重表示され得るが、表示重複は消失より害が小さい）。createForumTopic は逆に
  * 再試行しない（重複トピック＝返信喪失の温床になるため）。 */
-export async function pushInbound(threadId: number, text: string): Promise<void> {
+export async function pushInbound(groupChatId: number, threadId: number, text: string): Promise<void> {
   if (!text) return; // 空文字は Telegram が 400 で拒否する
   const CHUNK = 4000;
   let i = 0;
@@ -91,21 +95,23 @@ export async function pushInbound(threadId: number, text: string): Promise<void>
     if (end < text.length && c >= 0xd800 && c <= 0xdbff) end--;
     const part = text.slice(i, end);
     await withRetry('sendMessage', () =>
-      bot.api.sendMessage(cfg.groupChatId, part, { message_thread_id: threadId }));
+      bot.api.sendMessage(groupChatId, part, { message_thread_id: threadId }));
     i = end;
   }
 }
 
-/** 運用通知（グループの General スレッドへ）。会話本文・顧客名は載せないこと */
+/** 運用通知。会話本文・顧客名は載せないこと。全受信箱グループへ送る（どこを見ていても気付ける） */
 export async function notifyOps(text: string): Promise<void> {
-  await bot.api.sendMessage(cfg.groupChatId, text)
-    .catch((e) => console.error('運用通知の送信失敗:', String(e).slice(0, 120)));
+  for (const inbox of inboxes) {
+    await bot.api.sendMessage(inbox.groupChatId, text)
+      .catch((e) => console.error('運用通知の送信失敗:', String(e).slice(0, 120)));
+  }
 }
 
 /** 閉じられたトピックを開き直す（顧客の新着は流し続ける必要があるため） */
-export async function reopenTopic(threadId: number): Promise<void> {
+export async function reopenTopic(groupChatId: number, threadId: number): Promise<void> {
   await withRetry('reopenForumTopic', () =>
-    bot.api.reopenForumTopic(cfg.groupChatId, threadId));
+    bot.api.reopenForumTopic(groupChatId, threadId));
 }
 
 /** このエラーは「トピックが削除済み」か（紐付けを外して作り直すべきか） */
@@ -126,13 +132,21 @@ export function isTelegramError(e: unknown): boolean {
   return cause instanceof GrammyError || cause instanceof HttpError;
 }
 
+/** customer_key = "inbox:memberId" を分解する */
+function splitKey(key: string): { inboxId: string; memberId: string } {
+  const idx = key.indexOf(':');
+  return idx < 0
+    ? { inboxId: '', memberId: key }
+    : { inboxId: key.slice(0, idx), memberId: key.slice(idx + 1) };
+}
+
 /** 人が打った返信を拾う（トピック内のテキストのみ） */
 bot.on('message:text', async (ctx) => {
   const msg = ctx.message;
-  if (ctx.chat.id !== cfg.groupChatId) return;
+  if (!KNOWN_GROUPS.has(ctx.chat.id)) return; // 監視対象グループ以外は無視
   const threadId = msg.message_thread_id;
   if (!threadId || !msg.is_topic_message) return; // General等は無視
-  const cust = dbApi.byThread(threadId);
+  const cust = dbApi.byThread(ctx.chat.id, threadId);
   if (!cust) {
     // 黙って捨てると「送ったつもり」事故になるため必ずフィードバックする
     await ctx.reply(
@@ -142,16 +156,17 @@ bot.on('message:text', async (ctx) => {
     ).catch(() => {});
     return;
   }
-  onReply(cust.customer_key, cust.name ?? cust.customer_key, msg.text);
+  const { inboxId, memberId } = splitKey(cust.customer_key);
+  onReply(inboxId, memberId, cust.name ?? memberId, msg.text);
 });
 
 /** 返信の「編集」は Lpro に反映されない（気付かず顧客に届いたと誤認する事故を防ぐ） */
 bot.on('edited_message', async (ctx) => {
   const msg = ctx.editedMessage;
-  if (ctx.chat.id !== cfg.groupChatId) return;
+  if (!KNOWN_GROUPS.has(ctx.chat.id)) return;
   const threadId = msg.message_thread_id;
   if (!threadId || !msg.is_topic_message) return;
-  if (!dbApi.byThread(threadId)) return;
+  if (!dbApi.byThread(ctx.chat.id, threadId)) return;
   await ctx.reply(
     '⚠️ メッセージの編集は Lpro へ反映されません。修正内容を新しいメッセージとして送ってください。',
     { message_thread_id: threadId }
@@ -177,12 +192,12 @@ const NON_TEXT_CONTENT_KEYS = [
  */
 bot.on('message', async (ctx) => {
   const msg = ctx.message;
-  if (ctx.chat.id !== cfg.groupChatId) return;
+  if (!KNOWN_GROUPS.has(ctx.chat.id)) return;
   const threadId = msg.message_thread_id;
   if (!threadId || !msg.is_topic_message) return;
   const rec = msg as unknown as Record<string, unknown>;
   if (!NON_TEXT_CONTENT_KEYS.some((k) => rec[k] !== undefined)) return;
-  const note = dbApi.byThread(threadId)
+  const note = dbApi.byThread(ctx.chat.id, threadId)
     ? (msg.caption
         ? '⚠️ 画像・ファイル等は Lpro へ送信できません（キャプションも送られません）。テキストとして送り直してください。'
         : '⚠️ 画像・スタンプ等は Lpro へ送信できません（テキストのみ対応）。')

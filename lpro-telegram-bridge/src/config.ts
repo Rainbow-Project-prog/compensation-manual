@@ -8,9 +8,7 @@ const pkgRoot = fileURLToPath(new URL('..', import.meta.url));
 
 export const cfg = {
   telegramToken: required('TELEGRAM_BOT_TOKEN'),
-  groupChatId: process.env.GROUP_CHAT_ID ? Number(process.env.GROUP_CHAT_ID) : 0,
   loginUrl: required('LPRO_LOGIN_URL'),
-  talkUrl: required('LPRO_TALK_URL'),
   pollIntervalMs: Math.max(1000, num('POLL_INTERVAL_MS', 8000)),
   onlyUnread: (process.env.ONLY_UNREAD ?? 'true') === 'true',
   headless: (process.env.HEADLESS ?? 'false') === 'true',
@@ -24,6 +22,56 @@ export const cfg = {
   // 0にすると初回は何も配らない＝初回メッセージを取りこぼすので注意。
   bootstrapTail: num('BOOTSTRAP_TAIL', 5),
 };
+
+/**
+ * Lpro には独立した2つの受信箱がある（2026-07-12 動画で判明）:
+ *   - チャット応対（chat_message）: 自動応答が効かず全部手動対応 → 必ず監視
+ *   - ダイレクトトーク応対（linechat_message）: 基本は自動応答だが、キーワードに
+ *     変な絵文字が付くと不発 → 取りこぼし防止のため監視
+ * それぞれ別の Telegram グループへ配信する（受信箱の取り違え＝誤配信を構造的に防ぐ）。
+ * 構造（iframe経路・行・吹き出し・返信）は両者ほぼ同一なので SELECTORS は共用。
+ * chatframe の URL だけが違うため chatframeRe で受信箱を判別する。
+ */
+export type Inbox = {
+  id: 'chat' | 'talk';
+  name: string;
+  talkUrl: string;      // シェルの main iframe に読み込む URL
+  groupChatId: number;  // この受信箱を流す Telegram グループ
+  chatframeRe: RegExp;  // 顧客行 iframe（name=chatframe）を受信箱ごとに判別する
+};
+
+// 各受信箱は「URL と グループID の両方が設定されている」ときだけ有効
+const ALL_INBOXES: Inbox[] = [
+  {
+    id: 'chat',
+    name: 'チャット応対',
+    talkUrl: process.env.CHAT_TALK_URL ?? '',
+    groupChatId: num('CHAT_GROUP_CHAT_ID', 0),
+    // 顧客行 iframe の判別。実DOM(dump)では chat の chatframe URL はクエリが剥がれて
+    // `.../chat_message`（?無し）に落ち着くため ?有無どちらも許容する。ただし main ラッパー
+    // `chat_message?method=frame` と menu `chat_message_menu?` は除外する（前が "/" なので
+    // linechat_message にも一致しない）。
+    chatframeRe: /\/chat_message(?:\?(?!.*method=frame)|$)/,
+  },
+  {
+    id: 'talk',
+    name: 'ダイレクトトーク応対',
+    talkUrl: process.env.TALK_TALK_URL ?? '',
+    groupChatId: num('TALK_GROUP_CHAT_ID', 0),
+    // talk は chatframe が `linechat_message?site_id...`（?有り）、main ラッパーは
+    // `linechat_message_frame`（?無し・後ろが _frame）なので method=frame 除外と併せて衝突しない。
+    chatframeRe: /\/linechat_message(?:\?(?!.*method=frame)|$)/,
+  },
+];
+
+export const inboxes: Inbox[] = ALL_INBOXES.filter((i) => i.talkUrl && i.groupChatId);
+
+export function inboxById(id: string): Inbox | undefined {
+  return inboxes.find((i) => i.id === id);
+}
+export function inboxByGroup(groupChatId: number): Inbox | undefined {
+  return inboxes.find((i) => i.groupChatId === groupChatId);
+}
 
 /** launchPersistentContext に渡す httpCredentials（ベーシック認証が未設定なら undefined） */
 export function httpCredentials(): { username: string; password: string } | undefined {
