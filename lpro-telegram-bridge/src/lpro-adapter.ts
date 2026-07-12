@@ -413,13 +413,12 @@ export async function sendReply(inbox: Inbox, memberId: string, text: string): P
   const row = await findRow(f, memberId, inbox);
 
   const outbound = `${SELECTORS.messageGroup}:not(.${SELECTORS.inboundGroupClass})`;
-  // 送信本文（先頭30字）を検証キーにする。空白のみの返信はそもそも送らない（呼び出し側で弾く）。
+  // 送信本文（先頭30字）。空白のみの返信はそもそも送らない（呼び出し側で弾く）。
   const probe = clean(text).slice(0, 30);
   if (!probe) {
     throw new Error(`${inbox.name}: 空のメッセージは送信できません`);
   }
-  // 送信前の「送信本文を含む自分側吹き出しの数」。送信成功で必ず1つ増える。
-  // ※ 総数比較は自動応答や別オペレータの操作で汚染されるため使わず、本文一致に限定する（レビュー確定指摘）。
+  // 送信前の「送信本文を含む自分側吹き出しの数」（補助確認用）
   const countMatch = async (rowLoc: Locator): Promise<number> =>
     rowLoc.locator(outbound).filter({ hasText: probe }).count().catch(() => -1);
   const before = await countMatch(row);
@@ -429,14 +428,27 @@ export async function sendReply(inbox: Inbox, memberId: string, text: string): P
   const onDialog = (d: import('playwright').Dialog) => { void d.accept().catch(() => {}); };
   p.once('dialog', onDialog);
   try {
+    // ★主シグナル: 送信ボタンは per-row フォームを POST(target=chatframe) する。この POST 応答が
+    // 200 で返れば Lpro が返信を受理した＝送信成功。吹き出しの表示タイミングに依存せず確実。
+    // （吹き出しでの確認は表示が遅れると偽陰性→二重送信を招くため主シグナルにしない）
+    const respP = p
+      .waitForResponse(
+        (r) => inbox.chatframeRe.test(r.url()) && r.request().method() === 'POST',
+        { timeout: 15_000 }
+      )
+      .catch(() => null);
     await row.locator(SELECTORS.sendButton).first().click();
+    const resp = await respP;
 
-    // 送信ボタンは per-row フォームを submit し chatframe を再読込する（参照が切れる）。
-    // 会員IDで検索し直して「送信本文を含む自分側吹き出しが増えたか」だけを成功シグナルにする。
-    // ※「入力欄クリア」は再読込後は常に空になり恒真＝送信失敗を隠す（レビュー確定指摘）ため使わない。
-    // openMember は内部で最大数十秒待ち得るので、外側は反復回数で上限を持たせる（各回内部で待つ）。
-    let lastReason = '再読込待ち';
-    for (let i = 0; i < 6; i++) {
+    if (resp && resp.status() < 400) {
+      console.log(`送信確認OK[${inbox.name}]（Lproが返信を受理: HTTP ${resp.status()}）`);
+      return;
+    }
+
+    // 応答を捉えられなかった場合の補助確認: 会員IDで検索し直して送信本文の吹き出しが増えたか（長めに待つ）
+    let lastReason = resp ? `POST応答 ${resp.status()}` : 'POST応答を捉えられず';
+    for (let i = 0; i < 8; i++) {
+      await p.waitForTimeout(1500);
       let fc: Frame;
       try { fc = await openMember(inbox, memberId); } catch { lastReason = '再検索待ち'; continue; }
       const row2 = fc
@@ -444,13 +456,10 @@ export async function sendReply(inbox: Inbox, memberId: string, text: string): P
         .filter({ has: fc.locator(SELECTORS.memberIdText).getByText(memberId, { exact: true }) });
       if (await row2.count().catch(() => 0) !== 1) { lastReason = '行の再取得待ち'; continue; }
       const now = await countMatch(row2);
-      // ベースライン(before)計測に失敗(=-1)したときは成功と誤判定しない（before>=0 を必須にする）
       if (before >= 0 && now > before) {
         console.log(`送信確認OK[${inbox.name}]（自分側吹き出しに反映）`);
         return;
       }
-      lastReason = before < 0 ? '送信前の吹き出し数を計測できず' : '送信本文が自分側吹き出しに現れず';
-      await p.waitForTimeout(1000);
     }
     throw new Error(
       `${inbox.name}: 送信を確認できませんでした（${lastReason}）。` +
