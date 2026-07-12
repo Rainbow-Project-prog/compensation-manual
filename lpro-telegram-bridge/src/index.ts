@@ -22,6 +22,8 @@ function keyOf(inbox: Inbox, memberId: string): string {
 // 起動時ブートストラップで観測したDBキーの集合。稼働中に初遭遇した顧客が
 // 「起動時から居た（未読で委譲された）」のか「真の新規登録」なのかの区別に使う
 const startupKeys = new Set<string>();
+// 起動時に全会員IDを取り切れたか（取り切れないと「真の新規」判定が信用できないので保守運用にする）
+let startupComplete = true;
 
 /**
  * 起動時の一括ブートストラップ。各受信箱の全会話の現在件数を既読として記録し、
@@ -50,13 +52,24 @@ async function bootstrapAll(): Promise<void> {
     }
     // 返信済みも含む全会員IDを startupKeys に登録する（未返信だけ見ると、返信済み既存顧客が
     // 起動後に初送信したとき「真の新規」と誤認され履歴窓全件配信になるため）。
-    // ここは会員IDの把握が目的なのでメッセージ本文は読まない（すべて検索で軽く一覧取得）。
-    try {
-      const all = await runExclusive(() => listAllMemberIds(inbox));
-      for (const c of all) startupKeys.add(keyOf(inbox, c.memberId));
-    } catch (e) {
-      console.warn(`[${inbox.name}] 全会員IDの把握に失敗（続行）:`, String(e).slice(0, 150));
+    // メッセージ本文は読まない（すべて検索で会員IDのみ軽く取得）。失敗/打ち切り時は
+    // startupComplete=false にして「真の新規」判定を保守側（bootstrapTail 相当）へ倒す。
+    let got = false;
+    for (let attempt = 1; attempt <= 2 && !got; attempt++) {
+      try {
+        const { ids, truncated } = await runExclusive(() => listAllMemberIds(inbox));
+        for (const id of ids) startupKeys.add(keyOf(inbox, id));
+        got = true;
+        if (truncated) {
+          startupComplete = false;
+          console.warn(`[${inbox.name}] 会員IDが表示上限(${ids.length}件)で打ち切られました。真の新規判定を保守側に倒します`);
+        }
+      } catch (e) {
+        console.warn(`[${inbox.name}] 全会員IDの把握に失敗（${attempt}/2）:`, String(e).slice(0, 150));
+        if (attempt < 2) await new Promise((r) => setTimeout(r, 3000));
+      }
     }
+    if (!got) startupComplete = false;
     let done = 0;
     let skippedUnread = 0;
     for (const conv of convs) {
@@ -100,8 +113,11 @@ async function processConversation(inbox: Inbox, conv: Conversation): Promise<nu
   const cust = dbApi.get(key)!;
 
   // フィンガープリント方式: 台帳に無いハッシュのメッセージだけ配信する。
-  // 起動時に存在しなかった「真の新規顧客」は履歴全体が新規なので窓の全件を配る
-  const tail = startupKeys.has(key) ? cfg.bootstrapTail : Number.MAX_SAFE_INTEGER;
+  // 起動時に存在しなかった「真の新規顧客」は履歴全体が新規なので窓の全件を配る。
+  // ただし起動時の全会員ID把握に失敗/打ち切りがあると「真の新規」判定が信用できないので、
+  // その場合は保守側（bootstrapTail 件）に倒して既存顧客の過剰配信を防ぐ
+  const trulyNew = startupComplete && !startupKeys.has(key);
+  const tail = trulyNew ? Number.MAX_SAFE_INTEGER : cfg.bootstrapTail;
   const { deliver, bootstrap } = decideDeliveryBySeen(
     !!cust.bootstrapped,
     inbound,
@@ -209,16 +225,18 @@ async function pollOnce(): Promise<void> {
   } else {
     convFailureStreak = 0;
   }
-  // 表示上限に達した（未返信が多すぎて古い顧客を取りこぼす可能性）を1回だけ自己申告
-  if (pollHitLimit() && !overLimitNotified) {
-    overLimitNotified = true;
+  // 表示上限に達した（未返信が多すぎて古い顧客を取りこぼす可能性）を「未超過→超過」の遷移時だけ通知。
+  // 解消後に再超過したらまた通知する（持続超過中のスパムは抑える）
+  const nowOverLimit = pollHitLimit();
+  if (nowOverLimit && !prevOverLimit) {
     await notifyOps('⚠️ 未返信の一覧が表示上限に達しました。古い未返信顧客を取りこぼす可能性があります。Lpro で未返信を処理してください');
   }
+  prevOverLimit = nowOverLimit;
   if (playwrightSuspect) {
     await runExclusive(() => ensureLoggedIn(inboxes[0]));
   }
 }
-let overLimitNotified = false;
+let prevOverLimit = false;
 
 async function main(): Promise<void> {
   // PM2 経由は npm の prestart(doctor) を通らないため、ここでも必ずチェックする
@@ -258,6 +276,14 @@ async function main(): Promise<void> {
     const inbox = inboxById(inboxId);
     if (!inbox) {
       console.error(`返信の受信箱が不明です（inboxId=${inboxId}）。無視します`);
+      return;
+    }
+    // 空白のみの返信は Lpro に送らない（送信検証もできず、誤って成功扱いする穴を塞ぐ）
+    if (text.trim() === '') {
+      const c0 = dbApi.get(keyOf(inbox, memberId));
+      if (c0?.topic_thread_id && c0.group_chat_id) {
+        void pushInbound(c0.group_chat_id, c0.topic_thread_id, '⚠️ 空のメッセージは Lpro へ送信できません。').catch(() => {});
+      }
       return;
     }
     const key = keyOf(inbox, memberId);

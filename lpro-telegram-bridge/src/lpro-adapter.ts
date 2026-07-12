@@ -158,7 +158,8 @@ export async function ensureLoggedIn(inbox: Inbox = inboxes[0]): Promise<void> {
 type RowScan = { key: string; name: string; status: string; scans: MsgScan[] };
 
 const lastLoggedCounts = new Map<string, string>();
-let overLimitNotified = false;
+// 受信箱ごとの「現在サイクルで表示上限に達しているか」。解消すれば false に戻る
+const overLimitByInbox = new Map<string, boolean>();
 
 /**
  * 検索フォームを明示的に送信して chatframe を目的の状態にする。
@@ -255,7 +256,8 @@ export async function pollConversations(inbox: Inbox): Promise<Conversation[]> {
   if (rows.length === 0) {
     warnOnce(`empty-list-${inbox.id}`, `${inbox.name}: 顧客行が0件です。conversationItem セレクタと表示フィルタを確認してください。`);
   }
-  if (rows.length >= DISPLAY_LIMIT) overLimitNotified = true; // index.ts が notifyOps する
+  // 表示上限に達したか（現在サイクルの状態）。解消したら false に戻し、再超過で再警告できるようにする
+  overLimitByInbox.set(inbox.id, rows.length >= DISPLAY_LIMIT);
   const out = rows.map((r) => {
     // 未読判定は安全側: 「未返信」を含む、または「返信済」を含まない未知の状態は未読扱い
     const unread =
@@ -280,16 +282,18 @@ export async function pollConversations(inbox: Inbox): Promise<Conversation[]> {
   return out;
 }
 
-/** 巡回が表示上限に達したか（index.ts が notifyOps 判定に使う） */
+/** いずれかの受信箱が現在サイクルで表示上限に達しているか（index.ts が rising-edge 通知に使う） */
 export function pollHitLimit(): boolean {
-  return overLimitNotified;
+  for (const v of overLimitByInbox.values()) if (v) return true;
+  return false;
 }
 
 /**
  * 「すべて」検索で全会員IDだけを軽量取得する（メッセージ本文は読まない）。
  * ブートストラップで返信済み既存顧客も startupKeys に登録するために使う。
+ * 表示上限で打ち切られた場合は truncated=true（startupKeys が不完全になる＝呼び出し側で保守運用）。
  */
-export async function listAllMemberIds(inbox: Inbox): Promise<{ memberId: string }[]> {
+export async function listAllMemberIds(inbox: Inbox): Promise<{ ids: string[]; truncated: boolean }> {
   const f = await applySearch(inbox, { memberId: '', unreadOnly: false });
   const ids: string[] = await f.evaluate(
     (S) => {
@@ -302,7 +306,7 @@ export async function listAllMemberIds(inbox: Inbox): Promise<{ memberId: string
     },
     { conversationItem: SELECTORS.conversationItem, memberIdText: SELECTORS.memberIdText }
   );
-  return ids.map((memberId) => ({ memberId }));
+  return { ids, truncated: ids.length >= DISPLAY_LIMIT };
 }
 
 /** トーク画面を開き直して最新の描画にする（返信後の即時取り込み等の前に呼ぶ） */
@@ -409,14 +413,15 @@ export async function sendReply(inbox: Inbox, memberId: string, text: string): P
   const row = await findRow(f, memberId, inbox);
 
   const outbound = `${SELECTORS.messageGroup}:not(.${SELECTORS.inboundGroupClass})`;
+  // 送信本文（先頭30字）を検証キーにする。空白のみの返信はそもそも送らない（呼び出し側で弾く）。
   const probe = clean(text).slice(0, 30);
-  // 送信前の「自分側吹き出し」の状態。送信成功で必ず増える。
-  // probe（本文先頭）を含む数を主シグナルにし、本文が空白のみ等で probe が空のときは
-  // 自分側吹き出しの総数増加で代替する。
+  if (!probe) {
+    throw new Error(`${inbox.name}: 空のメッセージは送信できません`);
+  }
+  // 送信前の「送信本文を含む自分側吹き出しの数」。送信成功で必ず1つ増える。
+  // ※ 総数比較は自動応答や別オペレータの操作で汚染されるため使わず、本文一致に限定する（レビュー確定指摘）。
   const countMatch = async (rowLoc: Locator): Promise<number> =>
-    probe
-      ? await rowLoc.locator(outbound).filter({ hasText: probe }).count().catch(() => -1)
-      : await rowLoc.locator(outbound).count().catch(() => -1);
+    rowLoc.locator(outbound).filter({ hasText: probe }).count().catch(() => -1);
   const before = await countMatch(row);
 
   await row.locator(SELECTORS.replyInput).first().fill(text);
@@ -427,7 +432,7 @@ export async function sendReply(inbox: Inbox, memberId: string, text: string): P
     await row.locator(SELECTORS.sendButton).first().click();
 
     // 送信ボタンは per-row フォームを submit し chatframe を再読込する（参照が切れる）。
-    // 会員IDで検索し直して「自分側吹き出しに送信本文が現れたか」だけを成功シグナルにする。
+    // 会員IDで検索し直して「送信本文を含む自分側吹き出しが増えたか」だけを成功シグナルにする。
     // ※「入力欄クリア」は再読込後は常に空になり恒真＝送信失敗を隠す（レビュー確定指摘）ため使わない。
     // openMember は内部で最大数十秒待ち得るので、外側は反復回数で上限を持たせる（各回内部で待つ）。
     let lastReason = '再読込待ち';
@@ -439,11 +444,12 @@ export async function sendReply(inbox: Inbox, memberId: string, text: string): P
         .filter({ has: fc.locator(SELECTORS.memberIdText).getByText(memberId, { exact: true }) });
       if (await row2.count().catch(() => 0) !== 1) { lastReason = '行の再取得待ち'; continue; }
       const now = await countMatch(row2);
-      if (now > before) {
+      // ベースライン(before)計測に失敗(=-1)したときは成功と誤判定しない（before>=0 を必須にする）
+      if (before >= 0 && now > before) {
         console.log(`送信確認OK[${inbox.name}]（自分側吹き出しに反映）`);
         return;
       }
-      lastReason = '送信本文が自分側吹き出しに現れず';
+      lastReason = before < 0 ? '送信前の吹き出し数を計測できず' : '送信本文が自分側吹き出しに現れず';
       await p.waitForTimeout(1000);
     }
     throw new Error(
