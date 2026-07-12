@@ -179,11 +179,10 @@ async function applySearch(
   // 二段iframe（main→menu）の描画は goto 完了後も遅れることがあるため、既定30sを待たず
   // 検索欄の出現を短く待つ。掴めなければ呼び出し側で1回だけ再ナビゲートして再試行する。
   const attempt = async (): Promise<Frame> => {
-    const menu = findMenuFrame(inbox);
-    if (!menu) throw new Error(`${inbox.name}: 検索フォーム(menu iframe)が見つかりません`);
-    const idField = menu.locator(SELECTORS.memberIdFilter).first();
-    await idField.waitFor({ state: 'visible', timeout: 8_000 });
-    await idField.fill(opts.memberId, { timeout: 8_000 });
+    // menu sub-iframe は chatframe より遅れて読み込まれる/差し替わることがあるため、
+    // 検索欄が実際に出現するまで待つ（毎ループでフレームを取り直す）。
+    const menu = await waitMenuReady(inbox, 12_000);
+    await menu.locator(SELECTORS.memberIdFilter).first().fill(opts.memberId, { timeout: 8_000 });
     // 表示数を広げる（未返信100超の取りこぼし防止）。無ければ無視
     await menu.locator(SELECTORS.limitLarge).first().check({ timeout: 4_000 }).catch(() => {});
     const btn = opts.unreadOnly ? SELECTORS.searchUnreadButton : SELECTORS.searchAllButton;
@@ -342,6 +341,31 @@ function findMenuFrame(inbox: Inbox): Frame | null {
     if (inbox.menuRe.test(f.url())) return f;
   }
   return null;
+}
+
+/**
+ * menu iframe（検索フォーム）の member_id 欄が実際に出現するまで短くポーリングして待つ。
+ * gotoInbox は chatframe しか待たないため、menu sub-iframe が少し遅れて読み込まれる/差し替わる
+ * ケース（特に空の受信箱）で findMenuFrame が一瞬 null / 空文書を掴む問題を吸収する。
+ * 毎ループでフレームを取り直すので、フレーム参照の差し替えにも強い。
+ */
+async function waitMenuReady(inbox: Inbox, timeoutMs: number): Promise<Frame> {
+  const p = page!;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const menu = findMenuFrame(inbox);
+    if (menu) {
+      const ok = await menu
+        .locator(SELECTORS.memberIdFilter)
+        .first()
+        .waitFor({ state: 'visible', timeout: Math.min(2_000, Math.max(500, deadline - Date.now())) })
+        .then(() => true)
+        .catch(() => false);
+      if (ok) return menu;
+    }
+    await p.waitForTimeout(300);
+  }
+  throw new Error(`${inbox.name}: 検索フォーム(menu iframe)が現れません`);
 }
 
 /**
