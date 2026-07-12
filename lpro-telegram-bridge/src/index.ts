@@ -5,7 +5,7 @@ import { decideDeliveryBySeen } from './logic.js';
 import { runDoctor, printResult } from './preflight.js';
 import {
   initBrowser, closeBrowser, isBrowserGoneError, pageGone, ensureLoggedIn,
-  pollConversations, readInbound, sendReply, type Conversation,
+  pollConversations, readInbound, sendReply, pollHitLimit, listAllMemberIds, type Conversation,
 } from './lpro-adapter.js';
 import {
   startBot, stopBot, setReplyHandler, ensureTopic, pushInbound, reopenTopic, notifyOps,
@@ -48,6 +48,15 @@ async function bootstrapAll(): Promise<void> {
     if (convs.length === 0) {
       await notifyOps(`⚠️ 起動時ブートストラップ [${inbox.name}]: 会話一覧が0件です（顧客ゼロなら正常。セレクタ切れの可能性もあります）`);
     }
+    // 返信済みも含む全会員IDを startupKeys に登録する（未返信だけ見ると、返信済み既存顧客が
+    // 起動後に初送信したとき「真の新規」と誤認され履歴窓全件配信になるため）。
+    // ここは会員IDの把握が目的なのでメッセージ本文は読まない（すべて検索で軽く一覧取得）。
+    try {
+      const all = await runExclusive(() => listAllMemberIds(inbox));
+      for (const c of all) startupKeys.add(keyOf(inbox, c.memberId));
+    } catch (e) {
+      console.warn(`[${inbox.name}] 全会員IDの把握に失敗（続行）:`, String(e).slice(0, 150));
+    }
     let done = 0;
     let skippedUnread = 0;
     for (const conv of convs) {
@@ -55,7 +64,6 @@ async function bootstrapAll(): Promise<void> {
       const key = keyOf(inbox, conv.memberId);
       startupKeys.add(key);
       // 未読の未登録会話はここで既読化せず巡回の初遭遇経路（末尾 bootstrapTail 件配信）に委ねる。
-      // ここで setSeen すると「ブリッジ停止中に初回接触した顧客のメッセージ」が無音で消える
       if (conv.unread && !dbApi.get(key)?.bootstrapped) {
         skippedUnread++;
         continue;
@@ -63,7 +71,7 @@ async function bootstrapAll(): Promise<void> {
       if (dbApi.get(key)?.bootstrapped) continue;
       try {
         dbApi.upsert(key, conv.name);
-        const inbound = await runExclusive(() => readInbound(inbox, conv));
+        const inbound = conv.inbound ?? [];
         for (const m of inbound) dbApi.addSeen(key, m.hash);
         dbApi.setSeen(key, inbound.length, 1);
         done++;
@@ -83,10 +91,12 @@ async function bootstrapAll(): Promise<void> {
  * 並走したとき両者が同じ差分を読んで二重配信する。
  * 戻り値: 窓から抽出できた顧客メッセージ数（セレクタ切れの無音停止を検知する監視材料）
  */
-async function processConversation(inbox: Inbox, conv: Conversation, opts: { search?: boolean } = {}): Promise<number> {
+async function processConversation(inbox: Inbox, conv: Conversation): Promise<number> {
   const key = keyOf(inbox, conv.memberId);
   dbApi.upsert(key, conv.name);
-  const inbound = await readInbound(inbox, conv, opts);
+  // 巡回経路は pollConversations が1パスで抽出済み（conv.inbound）。返信後の単発再取り込み等で
+  // inbound 未添付なら会員ID検索で読む
+  const inbound = conv.inbound ?? await readInbound(inbox, conv);
   const cust = dbApi.get(key)!;
 
   // フィンガープリント方式: 台帳に無いハッシュのメッセージだけ配信する。
@@ -199,10 +209,16 @@ async function pollOnce(): Promise<void> {
   } else {
     convFailureStreak = 0;
   }
+  // 表示上限に達した（未返信が多すぎて古い顧客を取りこぼす可能性）を1回だけ自己申告
+  if (pollHitLimit() && !overLimitNotified) {
+    overLimitNotified = true;
+    await notifyOps('⚠️ 未返信の一覧が表示上限に達しました。古い未返信顧客を取りこぼす可能性があります。Lpro で未返信を処理してください');
+  }
   if (playwrightSuspect) {
     await runExclusive(() => ensureLoggedIn(inboxes[0]));
   }
 }
+let overLimitNotified = false;
 
 async function main(): Promise<void> {
   // PM2 経由は npm の prestart(doctor) を通らないため、ここでも必ずチェックする
@@ -253,9 +269,9 @@ async function main(): Promise<void> {
         // 会話本文はログに残さない（PM2 のログは平文でディスクに蓄積されるため）
         console.log(`→ Lpro送信 [${inbox.name}][${name}] (${text.length}字)`);
         if (shuttingDown) return;
-        // 返信で相手が返信済みになり未返信一覧から外れても、会員ID検索(search:true)で読み直して
-        // 直前に届いていた新着を取りこぼさない
-        return runExclusive(() => processConversation(inbox, { memberId, name, unread: true }, { search: true }))
+        // 返信で相手が返信済みになり未返信一覧から外れても、inbound 未添付で渡すと
+        // processConversation が会員ID検索で読み直すため、直前の新着を取りこぼさない
+        return runExclusive(() => processConversation(inbox, { memberId, name, unread: true }))
           .catch((e) => console.error(`返信後の取り込み失敗 [${inbox.name}][${name}]:`, String(e).slice(0, 200)));
       })
       .catch(async (e) => {

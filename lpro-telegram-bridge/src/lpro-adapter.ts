@@ -1,11 +1,31 @@
 import { chromium, type BrowserContext, type Page, type Frame, type Locator } from 'playwright';
 import { createHash } from 'node:crypto';
-import { cfg, SELECTORS, httpCredentials, inboxes, type Inbox } from './config.js';
+import { cfg, SELECTORS, DISPLAY_LIMIT, httpCredentials, inboxes, type Inbox } from './config.js';
 
-/** conv.memberId は Lpro の会員ID（受信箱に依らず顧客不変）。DBキーは inbox 込みで index.ts が合成 */
-export type Conversation = { memberId: string; name: string; unread: boolean };
+/** conv.memberId は Lpro の会員ID（受信箱に依らず顧客不変）。DBキーは inbox 込みで index.ts が合成。
+ * inbound は巡回時に一括抽出済みの顧客発言（共有画面の割り込み競合を避けるため poll 内で確定させる）。
+ * 返信後の再取り込み経路など inbound 未添付で来た場合は readInbound で読む。 */
+export type Conversation = { memberId: string; name: string; unread: boolean; inbound?: InboundMsg[] };
 /** hash はフィンガープリント（会員ID+日時+本文+同文連番）。重複配信・取りこぼし防止の要 */
 export type InboundMsg = { text: string; hash: string };
+
+/** 生スキャン（新→旧順）→ フィンガープリント付き顧客発言（時系列昇順）。poll/readInbound で共用 */
+type MsgScan = { inbound: boolean; text: string; dt: string; hasImage: boolean };
+function toInbound(inboxId: string, memberId: string, scans: MsgScan[]): InboundMsg[] {
+  const res: InboundMsg[] = [];
+  const dup = new Map<string, number>();
+  // ★実DOMは新→旧（最新が先頭）で並ぶ。時系列昇順（古→新）に直してから処理する
+  for (const m of [...scans].reverse()) {
+    if (!m.inbound) continue;
+    const text = m.text || (m.hasImage ? '[画像/スタンプ]（本文なし。Lproで確認してください）' : '');
+    if (!text) continue;
+    const base = createHash('sha1').update(`${inboxId}|${memberId}|${m.dt}|${text}`).digest('hex');
+    const n = dup.get(base) ?? 0;
+    dup.set(base, n + 1);
+    res.push({ text, hash: n === 0 ? base : `${base}:${n}` });
+  }
+  return res;
+}
 
 let ctx: BrowserContext | null = null;
 let page: Page | null = null;
@@ -134,10 +154,11 @@ export async function ensureLoggedIn(inbox: Inbox = inboxes[0]): Promise<void> {
   console.log(`Lpro ログイン確認OK（${inbox.name}）`);
 }
 
-/** 行スキャン結果（frame.evaluate で一括抽出する軽量DTO） */
-type RowScan = { key: string; name: string; status: string };
+/** 行スキャン結果（frame.evaluate で一括抽出）。各顧客の会話履歴（scans）も同時に取る */
+type RowScan = { key: string; name: string; status: string; scans: MsgScan[] };
 
 const lastLoggedCounts = new Map<string, string>();
+let overLimitNotified = false;
 
 /**
  * 検索フォームを明示的に送信して chatframe を目的の状態にする。
@@ -156,38 +177,67 @@ async function applySearch(
   const menu = findMenuFrame(inbox);
   if (!menu) throw new Error(`${inbox.name}: 検索フォーム(menu iframe)が見つかりません`);
   await menu.locator(SELECTORS.memberIdFilter).first().fill(opts.memberId);
+  // 表示数を広げる（未返信100超の取りこぼし防止）。無ければ無視
+  await menu.locator(SELECTORS.limitLarge).first().check().catch(() => {});
   const btn = opts.unreadOnly ? SELECTORS.searchUnreadButton : SELECTORS.searchAllButton;
-  await menu.locator(btn).first().click();
 
-  // 検索送信で chatframe が再読込される。フレーム取得＋行の描画待ち（0件のこともある）
-  const deadline = Date.now() + 15_000;
+  // ★検索フォーム submit は chatframe を再読込する（POST, target=chatframe）。
+  // 一括返信行(rowid=0)は再読込前の旧文書にも常在するため「行が出た」では再読込完了を判定できない。
+  // フォーム action への POST 応答を待って「再読込が確定した」ことを掴んでから読む。
+  const respP = p
+    .waitForResponse(
+      (r) => inbox.chatframeRe.test(r.url()) && r.request().method() === 'POST',
+      { timeout: 15_000 }
+    )
+    .catch(() => null);
+  await menu.locator(btn).first().click();
+  await respP; // 応答到達（=新文書コミット）まで待つ
+
+  // 応答後に chatframe を取り直し、描画の落ち着きを短く待つ
+  const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
-    await p.waitForTimeout(400);
     const f = findChatFrame(inbox);
-    if (!f) continue;
-    // conversationItem は一括返信行(rowid=0)を必ず含むので、これが出れば描画完了とみなす
-    await f.waitForSelector(SELECTORS.conversationItem, { timeout: 3000, state: 'attached' }).catch(() => {});
-    return f;
+    if (f) {
+      await f.waitForSelector(SELECTORS.conversationItem, { timeout: 3000, state: 'attached' }).catch(() => {});
+      return f;
+    }
+    await p.waitForTimeout(300);
   }
   throw new Error(`${inbox.name}: 検索後に chatframe が表示されません（セッション切れの疑い）`);
 }
 
 /**
- * 指定受信箱の顧客行一覧を取得。毎回「未返信のみ（会員ID絞り込み無し）」を明示送信して読む。
- * 一括返信行（会員ID無し）はここで除外される。
+ * 指定受信箱の顧客行一覧を、各顧客の会話履歴（inbound）まで含めて1回の evaluate で取得する。
+ * ★1パス抽出★ 顧客ごとに画面を開き直さないので、返信(openMember)が割り込んで表示が
+ * 対象1名に絞られても、この巡回で取った各顧客のデータは揺らがない（共有画面の競合を根絶）。
+ * 毎回「未返信のみ（会員ID絞り込み無し）」を明示送信して読む。一括返信行（会員ID無し）は除外。
  */
 export async function pollConversations(inbox: Inbox): Promise<Conversation[]> {
   const f = await applySearch(inbox, { memberId: '', unreadOnly: cfg.onlyUnread });
   const rows: RowScan[] = await f.evaluate(
     (S) => {
-      const out: Array<{ key: string; name: string; status: string }> = [];
+      const out: Array<{ key: string; name: string; status: string;
+        scans: Array<{ inbound: boolean; text: string; dt: string; hasImage: boolean }> }> = [];
       for (const row of document.querySelectorAll(S.conversationItem)) {
         const idEl = row.querySelector(S.memberIdText);
         const key = (idEl?.textContent ?? '').trim();
         if (!key) continue; // 一括返信行・会員ID欠落行はスキップ（誤爆防止）
         const name = (row.querySelector(S.customerName)?.textContent ?? '').trim().replace(/\s+/g, ' ').slice(0, 60);
         const status = (row.querySelector(S.statusCell)?.textContent ?? '').trim();
-        out.push({ key, name, status });
+        const scans: Array<{ inbound: boolean; text: string; dt: string; hasImage: boolean }> = [];
+        for (const g of row.querySelectorAll(S.messageGroup)) {
+          const bubble = g.querySelector(S.bubble);
+          if (!bubble) continue;
+          const dt = Array.from(g.querySelectorAll(S.msgDatetime))
+            .map((d) => (d.textContent ?? '').trim().replace(/\s+/g, ' ')).join(' ').trim();
+          scans.push({
+            inbound: g.classList.contains(S.inboundGroupClass),
+            text: (bubble.textContent ?? '').trim().replace(/\s+/g, ' '),
+            dt,
+            hasImage: bubble.querySelector('img') !== null,
+          });
+        }
+        out.push({ key, name, status, scans });
       }
       return out;
     },
@@ -196,11 +246,16 @@ export async function pollConversations(inbox: Inbox): Promise<Conversation[]> {
       memberIdText: SELECTORS.memberIdText,
       customerName: SELECTORS.customerName,
       statusCell: SELECTORS.statusCell,
+      messageGroup: SELECTORS.messageGroup,
+      inboundGroupClass: SELECTORS.inboundGroupClass,
+      bubble: SELECTORS.bubble,
+      msgDatetime: SELECTORS.msgDatetime,
     }
   );
   if (rows.length === 0) {
     warnOnce(`empty-list-${inbox.id}`, `${inbox.name}: 顧客行が0件です。conversationItem セレクタと表示フィルタを確認してください。`);
   }
+  if (rows.length >= DISPLAY_LIMIT) overLimitNotified = true; // index.ts が notifyOps する
   const out = rows.map((r) => {
     // 未読判定は安全側: 「未返信」を含む、または「返信済」を含まない未知の状態は未読扱い
     const unread =
@@ -210,7 +265,12 @@ export async function pollConversations(inbox: Inbox): Promise<Conversation[]> {
     if (r.status === '') {
       warnOnce(`empty-status-${inbox.id}`, `${inbox.name}: 返信状態セルが空の行があります。安全のため未読扱いにします。`);
     }
-    return { memberId: r.key, name: r.name || `ID:${r.key}`, unread };
+    return {
+      memberId: r.key,
+      name: r.name || `ID:${r.key}`,
+      unread,
+      inbound: toInbound(inbox.id, r.key, r.scans),
+    };
   });
   const counts = `${out.length}行/未読${out.filter((o) => o.unread).length}件`;
   if (lastLoggedCounts.get(inbox.id) !== counts) {
@@ -218,6 +278,31 @@ export async function pollConversations(inbox: Inbox): Promise<Conversation[]> {
     console.log(`巡回[${inbox.name}]: ${counts}`);
   }
   return out;
+}
+
+/** 巡回が表示上限に達したか（index.ts が notifyOps 判定に使う） */
+export function pollHitLimit(): boolean {
+  return overLimitNotified;
+}
+
+/**
+ * 「すべて」検索で全会員IDだけを軽量取得する（メッセージ本文は読まない）。
+ * ブートストラップで返信済み既存顧客も startupKeys に登録するために使う。
+ */
+export async function listAllMemberIds(inbox: Inbox): Promise<{ memberId: string }[]> {
+  const f = await applySearch(inbox, { memberId: '', unreadOnly: false });
+  const ids: string[] = await f.evaluate(
+    (S) => {
+      const out: string[] = [];
+      for (const row of document.querySelectorAll(S.conversationItem)) {
+        const key = (row.querySelector(S.memberIdText)?.textContent ?? '').trim();
+        if (key) out.push(key);
+      }
+      return out;
+    },
+    { conversationItem: SELECTORS.conversationItem, memberIdText: SELECTORS.memberIdText }
+  );
+  return ids.map((memberId) => ({ memberId }));
 }
 
 /** トーク画面を開き直して最新の描画にする（返信後の即時取り込み等の前に呼ぶ） */
@@ -278,36 +363,27 @@ async function findRow(f: Frame, memberId: string, inbox: Inbox): Promise<Locato
   return row;
 }
 
-/** メッセージ抽出DTO */
-type MsgScan = { inbound: boolean; text: string; dt: string; hasImage: boolean };
-
 /**
- * 顧客行の会話履歴から「顧客の発言」をフィンガープリント付きで取得。
- * ハッシュには受信箱IDも混ぜる（同じ会員IDが両受信箱に居ても取り違えない）。
+ * 特定顧客の会話履歴を会員ID検索で開いて読む（返信済みで未返信一覧から外れた相手も読める）。
+ * 巡回は pollConversations が1パスで抽出するので、これは返信後の再取り込み等の単発読みに使う。
  */
-export async function readInbound(
-  inbox: Inbox,
-  conv: Conversation,
-  opts: { search?: boolean } = {}
-): Promise<InboundMsg[]> {
-  // search=true は会員IDで検索して開く（返信済みで未返信一覧から外れた相手も読める）。
-  // 通常の巡回は default（未返信一覧）を使う（毎回検索するのは重いため）。
-  const f = opts.search ? await openMember(inbox, conv.memberId) : await gotoInbox(inbox, 20_000);
+export async function readInbound(inbox: Inbox, conv: Conversation): Promise<InboundMsg[]> {
+  const f = await openMember(inbox, conv.memberId);
   const row = await findRow(f, conv.memberId, inbox);
   const scans: MsgScan[] = await row.evaluate(
     (rowEl, S) => {
       const out: Array<{ inbound: boolean; text: string; dt: string; hasImage: boolean }> = [];
       for (const g of rowEl.querySelectorAll(S.messageGroup)) {
-        const inbound = g.classList.contains(S.inboundGroupClass);
         const bubble = g.querySelector(S.bubble);
         if (!bubble) continue;
-        const text = (bubble.textContent ?? '').trim().replace(/\s+/g, ' ');
         const dt = Array.from(g.querySelectorAll(S.msgDatetime))
-          .map((d) => (d.textContent ?? '').trim().replace(/\s+/g, ' '))
-          .join(' ')
-          .trim();
-        const hasImage = bubble.querySelector('img') !== null;
-        out.push({ inbound, text, dt, hasImage });
+          .map((d) => (d.textContent ?? '').trim().replace(/\s+/g, ' ')).join(' ').trim();
+        out.push({
+          inbound: g.classList.contains(S.inboundGroupClass),
+          text: (bubble.textContent ?? '').trim().replace(/\s+/g, ' '),
+          dt,
+          hasImage: bubble.querySelector('img') !== null,
+        });
       }
       return out;
     },
@@ -318,22 +394,7 @@ export async function readInbound(
       msgDatetime: SELECTORS.msgDatetime,
     }
   );
-
-  const res: InboundMsg[] = [];
-  const dupCount = new Map<string, number>();
-  // ★実DOMは新→旧（最新が先頭）で並ぶ。時系列昇順（古→新）に直してから処理する
-  for (const m of [...scans].reverse()) {
-    if (!m.inbound) continue;
-    const text = m.text || (m.hasImage ? '[画像/スタンプ]（本文なし。Lproで確認してください）' : '');
-    if (!text) continue;
-    const base = createHash('sha1')
-      .update(`${inbox.id}|${conv.memberId}|${m.dt}|${text}`)
-      .digest('hex');
-    const n = dupCount.get(base) ?? 0;
-    dupCount.set(base, n + 1);
-    res.push({ text, hash: n === 0 ? base : `${base}:${n}` });
-  }
-  return res;
+  return toInbound(inbox.id, conv.memberId, scans);
 }
 
 /**
@@ -349,10 +410,14 @@ export async function sendReply(inbox: Inbox, memberId: string, text: string): P
 
   const outbound = `${SELECTORS.messageGroup}:not(.${SELECTORS.inboundGroupClass})`;
   const probe = clean(text).slice(0, 30);
-  // 送信前の「自分側吹き出しに送信本文を含む数」。送信成功で必ず1つ増える
-  const probeBefore = probe
-    ? await row.locator(outbound).filter({ hasText: probe }).count().catch(() => 0)
-    : 0;
+  // 送信前の「自分側吹き出し」の状態。送信成功で必ず増える。
+  // probe（本文先頭）を含む数を主シグナルにし、本文が空白のみ等で probe が空のときは
+  // 自分側吹き出しの総数増加で代替する。
+  const countMatch = async (rowLoc: Locator): Promise<number> =>
+    probe
+      ? await rowLoc.locator(outbound).filter({ hasText: probe }).count().catch(() => -1)
+      : await rowLoc.locator(outbound).count().catch(() => -1);
+  const before = await countMatch(row);
 
   await row.locator(SELECTORS.replyInput).first().fill(text);
 
@@ -362,27 +427,24 @@ export async function sendReply(inbox: Inbox, memberId: string, text: string): P
     await row.locator(SELECTORS.sendButton).first().click();
 
     // 送信ボタンは per-row フォームを submit し chatframe を再読込する（参照が切れる）。
-    // 会員IDで検索し直して「自分側吹き出しに送信本文が増えたか」を確認する（返信済みでも
-    // 「すべて」検索なので相手は表示に残る）。偽陰性→二重送信を避けるため入力欄クリアも成功扱い。
-    const deadline = Date.now() + 20_000;
+    // 会員IDで検索し直して「自分側吹き出しに送信本文が現れたか」だけを成功シグナルにする。
+    // ※「入力欄クリア」は再読込後は常に空になり恒真＝送信失敗を隠す（レビュー確定指摘）ため使わない。
+    // openMember は内部で最大数十秒待ち得るので、外側は反復回数で上限を持たせる（各回内部で待つ）。
     let lastReason = '再読込待ち';
-    while (Date.now() < deadline) {
-      await p.waitForTimeout(1200);
+    for (let i = 0; i < 6; i++) {
       let fc: Frame;
       try { fc = await openMember(inbox, memberId); } catch { lastReason = '再検索待ち'; continue; }
       const row2 = fc
         .locator(SELECTORS.conversationItem)
         .filter({ has: fc.locator(SELECTORS.memberIdText).getByText(memberId, { exact: true }) });
       if (await row2.count().catch(() => 0) !== 1) { lastReason = '行の再取得待ち'; continue; }
-      const probeNow = probe
-        ? await row2.locator(outbound).filter({ hasText: probe }).count().catch(() => probeBefore)
-        : probeBefore;
-      const cleared = (await row2.locator(SELECTORS.replyInput).first().inputValue().catch(() => text)) === '';
-      if (probeNow > probeBefore || cleared) {
-        console.log(`送信確認OK[${inbox.name}]（シグナル: ${probeNow > probeBefore ? '送信本文が反映' : '入力欄クリア'}）`);
+      const now = await countMatch(row2);
+      if (now > before) {
+        console.log(`送信確認OK[${inbox.name}]（自分側吹き出しに反映）`);
         return;
       }
-      lastReason = '送信本文が反映されず・入力欄に残存';
+      lastReason = '送信本文が自分側吹き出しに現れず';
+      await p.waitForTimeout(1000);
     }
     throw new Error(
       `${inbox.name}: 送信を確認できませんでした（${lastReason}）。` +

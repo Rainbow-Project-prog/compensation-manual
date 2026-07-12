@@ -161,4 +161,9 @@ export const SELECTORS = {
   searchAllButton: 'button.find.jokyo0',
   // 「未返信のみ」＝ jokyo=1。巡回で毎回これを送信し、直前の検索状態に依存しない確定的な一覧にする
   searchUnreadButton: 'button.find.jokyo1',
+  // 表示数=500件（value=4）。既定100件だと未返信が100超のとき古い顧客を静かに取りこぼすため広げる
+  limitLarge: 'input[name="limit"][value="4"]',
 };
+
+// 表示上限（limitLarge=500件）。巡回でこの件数に達したら「打ち切りの可能性」を警告する
+export const DISPLAY_LIMIT = 500;
