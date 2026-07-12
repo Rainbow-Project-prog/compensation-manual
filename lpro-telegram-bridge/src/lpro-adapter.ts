@@ -140,11 +140,44 @@ type RowScan = { key: string; name: string; status: string };
 const lastLoggedCounts = new Map<string, string>();
 
 /**
- * 指定受信箱の顧客行一覧を取得。毎回開き直して最新の描画を読む。
+ * 検索フォームを明示的に送信して chatframe を目的の状態にする。
+ * ★これが重要★ Lpro はサーバー側セッションに直前の検索条件（会員ID絞り込み等）を保持するため、
+ * 単に画面を開き直すだけだと「送信時に会員ID検索した状態」が巡回に残り、他の未返信顧客を
+ * 見落とす。巡回・返信のたびに必要な条件を明示送信することで、検索状態に依存しない動作にする。
+ *   - 巡回:   memberId='' + 未返信のみ(or すべて)  → 全未返信を確定的に取得
+ *   - 返信/掘り起こし: memberId=対象 + すべて         → その相手だけを確実に開く
+ */
+async function applySearch(
+  inbox: Inbox,
+  opts: { memberId: string; unreadOnly: boolean }
+): Promise<Frame> {
+  const p = page!;
+  await gotoInbox(inbox, 20_000);
+  const menu = findMenuFrame(inbox);
+  if (!menu) throw new Error(`${inbox.name}: 検索フォーム(menu iframe)が見つかりません`);
+  await menu.locator(SELECTORS.memberIdFilter).first().fill(opts.memberId);
+  const btn = opts.unreadOnly ? SELECTORS.searchUnreadButton : SELECTORS.searchAllButton;
+  await menu.locator(btn).first().click();
+
+  // 検索送信で chatframe が再読込される。フレーム取得＋行の描画待ち（0件のこともある）
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    await p.waitForTimeout(400);
+    const f = findChatFrame(inbox);
+    if (!f) continue;
+    // conversationItem は一括返信行(rowid=0)を必ず含むので、これが出れば描画完了とみなす
+    await f.waitForSelector(SELECTORS.conversationItem, { timeout: 3000, state: 'attached' }).catch(() => {});
+    return f;
+  }
+  throw new Error(`${inbox.name}: 検索後に chatframe が表示されません（セッション切れの疑い）`);
+}
+
+/**
+ * 指定受信箱の顧客行一覧を取得。毎回「未返信のみ（会員ID絞り込み無し）」を明示送信して読む。
  * 一括返信行（会員ID無し）はここで除外される。
  */
 export async function pollConversations(inbox: Inbox): Promise<Conversation[]> {
-  const f = await gotoInbox(inbox, 20_000);
+  const f = await applySearch(inbox, { memberId: '', unreadOnly: cfg.onlyUnread });
   const rows: RowScan[] = await f.evaluate(
     (S) => {
       const out: Array<{ key: string; name: string; status: string }> = [];
@@ -209,23 +242,12 @@ function findMenuFrame(inbox: Inbox): Frame | null {
  * 表示された chatframe を返す。会員IDが存在しない/検索が効かない場合は throw。
  */
 async function openMember(inbox: Inbox, memberId: string): Promise<Frame> {
-  const p = page!;
-  await gotoInbox(inbox, 20_000);
-  const menu = findMenuFrame(inbox);
-  if (!menu) throw new Error(`${inbox.name}: 検索フォーム(menu iframe)が見つかりません`);
-  await menu.locator(SELECTORS.memberIdFilter).first().fill(memberId);
-  await menu.locator(SELECTORS.searchAllButton).first().click();
-
-  const deadline = Date.now() + 15_000;
-  while (Date.now() < deadline) {
-    await p.waitForTimeout(500);
-    const f = findChatFrame(inbox);
-    if (!f) continue; // 検索結果で chatframe 再読込中
-    const row = f
-      .locator(SELECTORS.conversationItem)
-      .filter({ has: f.locator(SELECTORS.memberIdText).getByText(memberId, { exact: true }) });
-    if (await row.count().catch(() => 0) >= 1) return f;
-  }
+  // 「すべて」＝返信済みも含めて、その会員IDだけを表示する
+  const f = await applySearch(inbox, { memberId, unreadOnly: false });
+  const row = f
+    .locator(SELECTORS.conversationItem)
+    .filter({ has: f.locator(SELECTORS.memberIdText).getByText(memberId, { exact: true }) });
+  if (await row.count().catch(() => 0) >= 1) return f;
   throw new Error(
     `${inbox.name}: 会員ID=${memberId} を検索しても行が出ません（この受信箱に居ない/存在しない会員IDの可能性）`
   );

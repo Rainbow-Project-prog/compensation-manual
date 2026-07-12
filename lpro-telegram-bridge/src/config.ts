@@ -159,4 +159,6 @@ export const SELECTORS = {
   memberIdFilter: 'textarea[name="member_id"]',
   // 「すべて」＝ jokyo=0（未返信/返信済みを問わず表示）。返信済みの相手や掘り起こしでも開ける
   searchAllButton: 'button.find.jokyo0',
+  // 「未返信のみ」＝ jokyo=1。巡回で毎回これを送信し、直前の検索状態に依存しない確定的な一覧にする
+  searchUnreadButton: 'button.find.jokyo1',
 };
