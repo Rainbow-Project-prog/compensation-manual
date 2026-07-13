@@ -4,7 +4,7 @@ import { runExclusive, drainQueue } from './queue.js';
 import { decideDeliveryBySeen } from './logic.js';
 import { runDoctor, printResult } from './preflight.js';
 import {
-  initBrowser, closeBrowser, isBrowserGoneError, pageGone, ensureLoggedIn,
+  initBrowser, closeBrowser, isBrowserGoneError, pageGone, ensureLoggedIn, setLoginNotifier,
   pollConversations, readInbound, sendReply, pollHitLimit, listAllMemberIds, type Conversation,
 } from './lpro-adapter.js';
 import {
@@ -268,6 +268,17 @@ async function main(): Promise<void> {
     dbApi.setMeta('fp_seeded', '1');
   }
 
+  // ログイン失効／復旧を運用グループへ通知する。initBrowser のログイン確認は startBot より前に
+  // 走るが、notifyOps は bot.api 経由なので bot 長ポーリング未起動でも送れる（無音クラッシュループの穴を塞ぐ）。
+  // 会話本文・顧客名は載せない（notifyOps の規約どおり）。
+  setLoginNotifier((e) => {
+    if (e === 'waiting') {
+      void notifyOps('⚠️ Lpro に未ログインです。ブリッジは受信・返信を止めて手動ログイン待機中です。表示中のブラウザでログイン（2FA含む）してください。');
+    } else {
+      void notifyOps('✅ Lpro へのログインを確認しました。監視を再開します。');
+    }
+  });
+
   await initBrowser();
   await bootstrapAll();
 
@@ -403,8 +414,22 @@ process.on('uncaughtException', (e) => {
   if (crashing) return;
   crashing = true;
   shuttingDown = true;
-  void Promise.race([drainQueue(), new Promise((r) => setTimeout(r, 8000))])
-    .finally(() => process.exit(1));
+  // 返信を排水し、ブラウザも閉じてから落ちる。閉じないと chromium が残って永続プロファイルの
+  // SingletonLock が残り、次回 launchPersistentContext が失敗して無音の起動失敗ループに陥る
+  void Promise.race([
+    (async () => { await drainQueue(); try { await closeBrowser(); } catch { /* already gone */ } })(),
+    new Promise((r) => setTimeout(r, 8000)),
+  ]).finally(() => process.exit(1));
 });
 
-main().catch((e) => { console.error(e); process.exit(1); });
+// 起動・初期化での致命エラーも無音にしない（ログイン失効は ensureLoggedIn が通知するが、
+// ブラウザ起動失敗・ブートストラップ失敗などは startBot より前に main を抜けるためここが最後の砦）。
+// これらは <30秒で死ぬと min_uptime を割り、PM2 が max_restarts 到達で永久停止＝完全無音死しうる。
+main().catch(async (e) => {
+  console.error(e);
+  await Promise.race([
+    notifyOps('⚠️ ブリッジが起動・初期化に失敗しました（再起動を繰り返している可能性があります）。表示中のブラウザとログを確認してください。'),
+    new Promise((r) => setTimeout(r, 8000)),
+  ]).catch(() => {});
+  process.exit(1);
+});

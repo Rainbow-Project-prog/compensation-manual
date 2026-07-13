@@ -39,6 +39,15 @@ function warnOnce(key: string, msg: string): void {
   console.warn(msg);
 }
 
+/** ログイン失効（手動ログイン待ち）／復旧を運用へ通知するフック。index.ts が notifyOps を接続する。
+ * ensureLoggedIn は startBot より前（initBrowser 内）でも走るが、notifyOps は bot.api 経由なので
+ * bot の長ポーリング未起動でも送れる。未設定でも待機動作は変わらない（テストや login.ts では無音）。 */
+export type LoginEvent = 'waiting' | 'recovered';
+let loginNotifier: ((e: LoginEvent) => void) | null = null;
+export function setLoginNotifier(fn: ((e: LoginEvent) => void) | null): void {
+  loginNotifier = fn;
+}
+
 function clean(s: string | null | undefined): string {
   return (s ?? '').trim().replace(/\s+/g, ' ');
 }
@@ -52,18 +61,32 @@ export async function initBrowser(): Promise<void> {
   }
   // 再初期化（クラッシュ復旧）に備えて既存コンテキストは先に閉じる
   if (ctx) await closeBrowser();
-  ctx = await chromium.launchPersistentContext(cfg.userDataDir, {
-    headless: cfg.headless,
-    viewport: { width: 1400, height: 950 },
-    // /manage の HTTP ベーシック認証（realm "InfoSys Manager"）に自動応答する。
-    httpCredentials: httpCredentials(),
-    // Ctrl+C / kill の終了処理は index.ts の shutdown() が担う。Playwright 既定のシグナルハンドラは
-    // ブラウザを閉じた直後に process.exit してしまい、返信の排水・bot停止・DBクローズを先取りで打ち切る
-    handleSIGINT: false,
-    handleSIGTERM: false,
-    handleSIGHUP: false,
-  });
-  page = ctx.pages()[0] ?? (await ctx.newPage());
+  // PM2 restart 直後は、直前まで動いていた chromium がプロファイルのロック（Windows の
+  // ProcessSingleton）を解放しきる前に launchPersistentContext が走り、「既存のブラウザ
+  // セッションで開いています」で失敗することがある。これを放置すると起動失敗→即再起動→また
+  // ロック衝突…の無音クラッシュループになる（実機で確認）。数秒あけて数回リトライし解放を待つ。
+  ctx = null;
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    try {
+      ctx = await chromium.launchPersistentContext(cfg.userDataDir, {
+        headless: cfg.headless,
+        viewport: { width: 1400, height: 950 },
+        // /manage の HTTP ベーシック認証（realm "InfoSys Manager"）に自動応答する。
+        httpCredentials: httpCredentials(),
+        // Ctrl+C / kill の終了処理は index.ts の shutdown() が担う。Playwright 既定のシグナルハンドラは
+        // ブラウザを閉じた直後に process.exit してしまい、返信の排水・bot停止・DBクローズを先取りで打ち切る
+        handleSIGINT: false,
+        handleSIGTERM: false,
+        handleSIGHUP: false,
+      });
+      break;
+    } catch (e) {
+      if (attempt === 5) throw e;
+      console.warn(`ブラウザ起動に失敗（プロファイルのロック解放待ちの可能性）。${attempt}/5、3秒後に再試行します: ${String(e).slice(0, 120)}`);
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+  page = ctx!.pages()[0] ?? (await ctx!.newPage());
   currentInboxId = null;
   // 最初の受信箱でログイン確認（複数受信箱でもログインは共通のセッション）
   await ensureLoggedIn(inboxes[0]);
@@ -141,15 +164,25 @@ export async function ensureLoggedIn(inbox: Inbox = inboxes[0]): Promise<void> {
         '.env で HEADLESS=false にして `npm run login` を実行してください'
       );
     }
-    console.log('未ログインの可能性。表示中のブラウザでログイン（2FA含む）してください。最大5分待機…');
+    // ★以前は5分デッドラインで throw していたが、それだと PM2 が即再起動し、開いていた
+    //   ログイン用ウィンドウごと消えて 2FA を中断してしまう（＝誰にも通知されない無音クラッシュループ）。
+    //   ヘッドフルなので手動ログインが済むまで待ち続け、運用グループには即時＋定期的にアラートする。
+    console.log('未ログインの可能性。表示中のブラウザでログイン（2FA含む）してください。ログインを確認するまで待機します…');
     await p.goto(cfg.loginUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
-    const deadline = Date.now() + 300_000;
-    while (Date.now() < deadline && !ok) {
+    let nextAlertAt = 0; // 0 = まず1回目のアラートを即送る
+    const REALERT_MS = 15 * 60_000; // 待機が続く間は15分ごとに再通知（気付けるように・ただしスパムは避ける）
+    while (!ok) {
+      if (Date.now() >= nextAlertAt) {
+        try { loginNotifier?.('waiting'); } catch { /* 通知失敗で待機を止めない */ }
+        nextAlertAt = Date.now() + REALERT_MS;
+      }
       ok = await p.locator(SELECTORS.loggedInMarker).first().isVisible().catch(() => false);
       if (!ok) await p.waitForTimeout(2000);
     }
-    if (!ok) throw new Error('5分以内にログインを確認できませんでした');
+    // 実際に受信箱へ到達できてから「復旧・監視再開」を通知する（gotoInbox が失敗したら
+    // 誤って再開を告げず、throw は main().catch のアラートに委ねる）
     await gotoInbox(inbox, 30_000);
+    try { loginNotifier?.('recovered'); } catch { /* noop */ }
   }
   console.log(`Lpro ログイン確認OK（${inbox.name}）`);
 }
