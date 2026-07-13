@@ -1,31 +1,15 @@
 import { chromium, type BrowserContext, type Page, type Frame, type Locator } from 'playwright';
-import { createHash } from 'node:crypto';
+import { toConvMessages, type ScanMsg, type ConvMsg } from './logic.js';
 import { cfg, SELECTORS, DISPLAY_LIMIT, httpCredentials, inboxes, type Inbox } from './config.js';
 
 /** conv.memberId は Lpro の会員ID（受信箱に依らず顧客不変）。DBキーは inbox 込みで index.ts が合成。
  * inbound は巡回時に一括抽出済みの顧客発言（共有画面の割り込み競合を避けるため poll 内で確定させる）。
  * 返信後の再取り込み経路など inbound 未添付で来た場合は readInbound で読む。 */
+// 会話メッセージ（顧客側＋自分側の両方）。フィンガープリント生成は logic.ts の純関数に集約した。
+export type InboundMsg = ConvMsg;
+// 生スキャン型（DOM 抽出用）。フィンガープリント式は logic.toConvMessages が持つ
+type MsgScan = ScanMsg;
 export type Conversation = { memberId: string; name: string; unread: boolean; inbound?: InboundMsg[] };
-/** hash はフィンガープリント（会員ID+日時+本文+同文連番）。重複配信・取りこぼし防止の要 */
-export type InboundMsg = { text: string; hash: string };
-
-/** 生スキャン（新→旧順）→ フィンガープリント付き顧客発言（時系列昇順）。poll/readInbound で共用 */
-type MsgScan = { inbound: boolean; text: string; dt: string; hasImage: boolean };
-function toInbound(inboxId: string, memberId: string, scans: MsgScan[]): InboundMsg[] {
-  const res: InboundMsg[] = [];
-  const dup = new Map<string, number>();
-  // ★実DOMは新→旧（最新が先頭）で並ぶ。時系列昇順（古→新）に直してから処理する
-  for (const m of [...scans].reverse()) {
-    if (!m.inbound) continue;
-    const text = m.text || (m.hasImage ? '[画像/スタンプ]（本文なし。Lproで確認してください）' : '');
-    if (!text) continue;
-    const base = createHash('sha1').update(`${inboxId}|${memberId}|${m.dt}|${text}`).digest('hex');
-    const n = dup.get(base) ?? 0;
-    dup.set(base, n + 1);
-    res.push({ text, hash: n === 0 ? base : `${base}:${n}` });
-  }
-  return res;
-}
 
 let ctx: BrowserContext | null = null;
 let page: Page | null = null;
@@ -322,7 +306,7 @@ export async function pollConversations(inbox: Inbox): Promise<Conversation[]> {
       memberId: r.key,
       name: r.name || `ID:${r.key}`,
       unread,
-      inbound: toInbound(inbox.id, r.key, r.scans),
+      inbound: toConvMessages(inbox.id, r.key, r.scans),
     };
   });
   const counts = `${out.length}行/未読${out.filter((o) => o.unread).length}件`;
@@ -474,7 +458,7 @@ export async function readInbound(inbox: Inbox, conv: Conversation): Promise<Inb
       msgDatetime: SELECTORS.msgDatetime,
     }
   );
-  return toInbound(inbox.id, conv.memberId, scans);
+  return toConvMessages(inbox.id, conv.memberId, scans);
 }
 
 /**

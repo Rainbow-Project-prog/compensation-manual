@@ -15,6 +15,9 @@ CREATE TABLE IF NOT EXISTS customers (
   group_chat_id   INTEGER,
   bootstrapped    INTEGER NOT NULL DEFAULT 0,
   seen_count      INTEGER NOT NULL DEFAULT 0,
+  -- 自分側発言のフィンガープリント基準を確立済みか（双方向同期の移行ガード）。
+  -- 従来 seen 台帳は顧客側しか持たないため、既存顧客は初回接触で自分側を一括既知化してから配信する
+  self_seeded     INTEGER NOT NULL DEFAULT 0,
   created_at      INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS meta (
@@ -38,10 +41,22 @@ CREATE TABLE IF NOT EXISTS pending_replies (
   text         TEXT NOT NULL,
   created_at   INTEGER NOT NULL
 );
+-- Telegram経由で送った返信の控え（正規化本文）。次の読取で自分側吹き出しとして逆流するのを
+-- 配信抑止するため。再起動をまたいでも二重配信しないよう永続化する（TTL で自動失効）
+CREATE TABLE IF NOT EXISTS sent_echoes (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  customer_key TEXT NOT NULL,
+  norm_text    TEXT NOT NULL,
+  created_at   INTEGER NOT NULL
+);
 `);
 
-// 旧スキーマ（group_chat_id 列が無い）からの移行。列が既にあれば無視される
+// 旧スキーマからの列追加移行。列が既にあれば無視される
 try { db.exec('ALTER TABLE customers ADD COLUMN group_chat_id INTEGER'); } catch { /* already exists */ }
+try { db.exec('ALTER TABLE customers ADD COLUMN self_seeded INTEGER NOT NULL DEFAULT 0'); } catch { /* already exists */ }
+// 最後に「実活動」があった時刻（顧客の新着 or オペレーター返信）。双方向再同期の対象を
+// 直近活動のあるトピックだけに絞り、休眠会話を延々クロールしない/レイテンシを一定に保つため
+try { db.exec('ALTER TABLE customers ADD COLUMN last_activity INTEGER'); } catch { /* already exists */ }
 
 export type Customer = {
   customer_key: string;
@@ -50,6 +65,8 @@ export type Customer = {
   group_chat_id: number | null;
   bootstrapped: number;
   seen_count: number;
+  self_seeded: number;
+  last_activity: number | null;
 };
 
 export const dbApi = {
@@ -74,6 +91,21 @@ export const dbApi = {
   setSeen: (key: string, count: number, bootstrapped = 1) =>
     db.prepare('UPDATE customers SET seen_count=?, bootstrapped=? WHERE customer_key=?')
       .run(count, bootstrapped, key),
+  // 自分側発言のベースライン確立フラグ（双方向同期の移行ガード。既存顧客の過去自分側発言の一斉配信を防ぐ）
+  setSelfSeeded: (key: string) =>
+    db.prepare('UPDATE customers SET self_seeded=1 WHERE customer_key=?').run(key),
+  // 「実活動」時刻を更新（顧客の新着＝未読巡回で処理 / オペレーター返信の送信時）。再同期の対象選定に使う
+  touchActivity: (key: string) =>
+    db.prepare('UPDATE customers SET last_activity=? WHERE customer_key=?').run(Date.now(), key),
+  // 双方向再同期の対象: グループに紐付く「トピックを開いている」かつ直近 sinceMs 以降に実活動のある顧客。
+  // 休眠会話を延々再読しないよう活動でバウンドし、直近活動順に返す（PC返信のレイテンシを一定に保つ）
+  listOpenTopics: (groupChatId: number, sinceMs: number) =>
+    db.prepare(
+      `SELECT customer_key, name FROM customers
+       WHERE group_chat_id=? AND topic_thread_id IS NOT NULL
+         AND last_activity IS NOT NULL AND last_activity >= ?
+       ORDER BY last_activity DESC`
+    ).all(groupChatId, sinceMs) as Array<{ customer_key: string; name: string | null }>,
   // 返信の宛先解決: スレッドIDはグループ内でのみ一意なので、必ずグループでも絞る
   // （2グループ運用で thread_id が偶然一致しても別顧客に誤配信しないため）
   byThread: (groupChatId: number, threadId: number) =>
@@ -125,6 +157,21 @@ export const dbApi = {
     db.prepare('SELECT * FROM pending_replies ORDER BY id').all() as Array<{
       id: number; customer_key: string; name: string | null; text: string; created_at: number;
     }>,
+  // ── 送信エコーの控え（自送信の逆流を配信抑止。再起動をまたいで有効）──
+  addSentEcho: (key: string, normText: string) =>
+    db.prepare('INSERT INTO sent_echoes (customer_key, norm_text, created_at) VALUES (?,?,?)')
+      .run(key, normText, Date.now()),
+  // 一致する最古の控えを1件だけ消費して true。TTL より古い控えは無視する（無ければ false=PC直返信）
+  consumeSentEcho: (key: string, normText: string, ttlMs: number): boolean => {
+    const row = db.prepare(
+      'SELECT id FROM sent_echoes WHERE customer_key=? AND norm_text=? AND created_at>=? ORDER BY id LIMIT 1'
+    ).get(key, normText, Date.now() - ttlMs) as { id: number } | undefined;
+    if (!row) return false;
+    db.prepare('DELETE FROM sent_echoes WHERE id=?').run(row.id);
+    return true;
+  },
+  pruneSentEchoes: (ttlMs: number) =>
+    db.prepare('DELETE FROM sent_echoes WHERE created_at < ?').run(Date.now() - ttlMs),
 };
 
 /** 終了時に呼ぶ。WAL を確定してファイルを閉じる */

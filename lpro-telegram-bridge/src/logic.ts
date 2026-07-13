@@ -17,22 +17,50 @@
  */
 export type FpMsg = { text: string; hash: string };
 
-export type FpDecision = {
-  /** Telegram へ配信するメッセージ（表示順） */
-  deliver: FpMsg[];
-  /** 初回ブートストラップとして処理したか */
-  bootstrap: boolean;
-};
-
-export function decideDeliveryBySeen(
+// 配信判定はハッシュだけで行うので、self ラベル等の追加フィールドを持つメッセージでも
+// そのまま（型を保ったまま）通せるようジェネリックにする。
+export function decideDeliveryBySeen<T extends { hash: string }>(
   bootstrapped: boolean,
-  inbound: FpMsg[],
+  inbound: T[],
   hasSeen: (hash: string) => boolean,
   opts: { bootstrapTail?: number } = {}
-): FpDecision {
+): { deliver: T[]; bootstrap: boolean } {
   if (!bootstrapped) {
     const tail = Math.max(0, Math.floor(opts.bootstrapTail ?? 0));
     return { deliver: tail > 0 ? inbound.slice(-tail) : [], bootstrap: true };
   }
   return { deliver: inbound.filter((m) => !hasSeen(m.hash)), bootstrap: false };
+}
+
+// ── フィンガープリント生成（純関数。Lpro/Telegram 非依存なのでここで単体テストする）──
+import { createHash } from 'node:crypto';
+
+/** 生スキャン1件（lpro-adapter が行の DOM から抽出）。inbound=true は顧客側（.mb_M.left）。 */
+export type ScanMsg = { inbound: boolean; text: string; dt: string; hasImage: boolean };
+/** フィンガープリント付き会話メッセージ。self=true は自分側（オペレーター/自動応答）の発言。 */
+export type ConvMsg = { text: string; hash: string; self: boolean };
+
+/**
+ * 生スキャン（実DOMは新→旧順）→ フィンガープリント付き会話メッセージ（時系列昇順）。
+ * ★顧客側(inbound)のハッシュ式は従来と完全に同一に保つ：既存の seen 台帳と一致させ、
+ *   本機能アップグレードで顧客メッセージが一斉再配信されるのを防ぐため（誤配信/スパム防止の要）。
+ *   自分側(self)は "out" を挟んだ別式にし、顧客と同一日時・同一本文でも衝突させない。
+ * 同一式のメッセージが複数（同文連投）なら :連番 を付けて別メッセージ扱いにする。
+ */
+export function toConvMessages(inboxId: string, memberId: string, scans: ScanMsg[]): ConvMsg[] {
+  const res: ConvMsg[] = [];
+  const dup = new Map<string, number>();
+  for (const m of [...scans].reverse()) {
+    const self = !m.inbound;
+    const text = m.text || (m.hasImage ? '[画像/スタンプ]（本文なし。Lproで確認してください）' : '');
+    if (!text) continue;
+    const material = self
+      ? `${inboxId}|${memberId}|out|${m.dt}|${text}`
+      : `${inboxId}|${memberId}|${m.dt}|${text}`;
+    const base = createHash('sha1').update(material).digest('hex');
+    const n = dup.get(base) ?? 0;
+    dup.set(base, n + 1);
+    res.push({ text, hash: n === 0 ? base : `${base}:${n}`, self });
+  }
+  return res;
 }

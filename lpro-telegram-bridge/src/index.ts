@@ -25,6 +25,24 @@ const startupKeys = new Set<string>();
 // 起動時に全会員IDを取り切れたか（取り切れないと「真の新規」判定が信用できないので保守運用にする）
 let startupComplete = true;
 
+// 自分側（L-Pro/オペレーター）発言を Telegram に流すときのラベル。顧客の発言と一目で区別する
+const SELF_PREFIX = '🔷 自分(L-Pro): ';
+
+// Telegram 経由で送った返信は、次の読取で自分側吹き出しとして「逆流」してくる。そのまま配信すると
+// 二重表示になるため、送信本文（正規化）を控え、一致する自分側発言は配信を抑止する（既知化はする）。
+// 控えは DB に永続化する: 送信直後は吹き出しがまだ描画されず控えを既知化できないうちに再起動（や
+// ログイン待ち）が挟まると、メモリ控えだと失われて逆流を1回配信してしまうため。TTL で自動失効。
+const SENT_ECHO_TTL_MS = 60 * 60_000;
+const normText = (s: string): string => s.trim().replace(/\s+/g, ' ');
+function recordSentEcho(key: string, text: string): void {
+  dbApi.addSentEcho(key, normText(text));
+  dbApi.pruneSentEchoes(SENT_ECHO_TTL_MS);
+}
+/** 自分側発言 text がブリッジ自身の送信（逆流）なら true（控えを1件消費）。PC直返信は false でそのまま配信。 */
+function consumeSentEcho(key: string, text: string): boolean {
+  return dbApi.consumeSentEcho(key, normText(text), SENT_ECHO_TTL_MS);
+}
+
 /**
  * 起動時の一括ブートストラップ。各受信箱の全会話の現在件数を既読として記録し、
  * 過去ログを配らずに基準点を作る。トピックはここでは作らない（配信が必要になった時に作る）。
@@ -85,8 +103,10 @@ async function bootstrapAll(): Promise<void> {
       try {
         dbApi.upsert(key, conv.name);
         const inbound = conv.inbound ?? [];
+        // inbound は顧客側＋自分側の両方を含む。全件を既知化して基準化する（自分側もこれで baseline 済み）
         for (const m of inbound) dbApi.addSeen(key, m.hash);
         dbApi.setSeen(key, inbound.length, 1);
+        dbApi.setSelfSeeded(key);
         done++;
       } catch (e) {
         console.warn(`[${inbox.name}] ブートストラップ失敗（続行）: ${conv.name}:`, String(e).slice(0, 200));
@@ -112,6 +132,13 @@ async function processConversation(inbox: Inbox, conv: Conversation): Promise<nu
   const inbound = conv.inbound ?? await readInbound(inbox, conv);
   const cust = dbApi.get(key)!;
 
+  // 移行ガード（双方向同期）: 自分側発言は従来フィンガープリント化されていなかったため、既存(bootstrap済)
+  // 顧客の台帳には自分側ハッシュが無い。初回接触で現在の自分側発言を一括既知化し、過去分の一斉配信を防ぐ。
+  if (cust.bootstrapped && !cust.self_seeded) {
+    for (const m of inbound) if (m.self) dbApi.addSeen(key, m.hash);
+    dbApi.setSelfSeeded(key);
+  }
+
   // フィンガープリント方式: 台帳に無いハッシュのメッセージだけ配信する。
   // 起動時に存在しなかった「真の新規顧客」は履歴全体が新規なので窓の全件を配る。
   // ただし起動時の全会員ID把握に失敗/打ち切りがあると「真の新規」判定が信用できないので、
@@ -132,18 +159,28 @@ async function processConversation(inbox: Inbox, conv: Conversation): Promise<nu
       if (!deliverSet.has(m.hash)) dbApi.addSeen(key, m.hash);
     }
     dbApi.setSeen(key, inbound.length, 1);
+    dbApi.setSelfSeeded(key);
   }
-  if (deliver.length > 0) {
+  // 自送信の逆流（Telegram経由で送った返信が自分側吹き出しとして再出現）は配信しない（既知化のみ）。
+  // PC で直接 L-Pro に打った返信は控えに無いのでそのまま配信される＝双方向にリンクする。
+  const toDeliver: typeof deliver = [];
+  for (const m of deliver) {
+    if (m.self && consumeSentEcho(key, m.text)) { dbApi.addSeen(key, m.hash); continue; }
+    toDeliver.push(m);
+  }
+  if (toDeliver.length > 0) {
     // トピック名に会員IDを含めて同名顧客の取り違えを防ぐ。トピックは受信箱のグループへ作る
     const threadId = await ensureTopic(key, `${conv.name}（${conv.memberId}）`, inbox.groupChatId);
-    for (const m of deliver) {
+    for (const m of toDeliver) {
+      // 自分側発言はラベルを付けて顧客の発言と区別する
+      const outText = m.self ? SELF_PREFIX + m.text : m.text;
       try {
-        await pushInbound(inbox.groupChatId, threadId, m.text);
+        await pushInbound(inbox.groupChatId, threadId, outText);
       } catch (e) {
         if (isTopicClosedError(e)) {
           console.warn(`[${inbox.name}] トピックが閉じられています。開き直します: ${conv.name}`);
           await reopenTopic(inbox.groupChatId, threadId);
-          await pushInbound(inbox.groupChatId, threadId, m.text);
+          await pushInbound(inbox.groupChatId, threadId, outText);
         } else if (isThreadNotFoundError(e)) {
           console.warn(`[${inbox.name}] トピックが削除されています。次回作り直します: ${conv.name}`);
           dbApi.clearTopic(key);
@@ -169,9 +206,53 @@ let convFailureStreak = 0;
 const zeroExtractStreak = new Map<string, number>();
 let lastTopicFailNotifyAt = 0;
 
+// 双方向再同期: トピックを開いている顧客を（返信済みで未読巡回から外れていても）定期的に再読し、
+// PC直返信・遅延新着を Telegram へ反映する。会員ID検索が要るので batch 件/interval に絞り負荷を抑える。
+let lastResyncAt = 0;
+const resyncCursor = new Map<string, number>(); // inbox.id -> ラウンドロビン位置
+async function resyncOpenTopics(processedThisCycle: Set<string>): Promise<void> {
+  if (cfg.resyncBatch <= 0) return;
+  if (Date.now() - lastResyncAt < cfg.resyncIntervalMs) return;
+  lastResyncAt = Date.now();
+  // 1 tick 全体の壁時計上限。超えたら打ち切って未読巡回の再開を遅らせない（遅れた分は次 tick で継続）
+  const deadline = Date.now() + cfg.resyncMaxMs;
+  const since = Date.now() - cfg.resyncActiveWindowMs;
+  for (const inbox of inboxes) {
+    if (shuttingDown || Date.now() > deadline) return;
+    // 直近活動のあるトピックだけを直近順に。休眠会話を延々再読しない（負荷とレイテンシを一定に保つ）
+    const open = dbApi.listOpenTopics(inbox.groupChatId, since);
+    if (open.length === 0) continue;
+    const prefix = `${inbox.id}:`;
+    let pos = (resyncCursor.get(inbox.id) ?? 0) % open.length;
+    let scanned = 0;
+    let synced = 0;
+    while (scanned < open.length && synced < cfg.resyncBatch) {
+      if (shuttingDown || Date.now() > deadline) { resyncCursor.set(inbox.id, pos); return; }
+      const key = open[pos].customer_key;
+      const name = open[pos].name;
+      pos = (pos + 1) % open.length;
+      scanned++;
+      // 今サイクルの未読巡回で処理済みの顧客は二度読みしない（コスト節約）
+      if (processedThisCycle.has(key)) continue;
+      const memberId = key.startsWith(prefix) ? key.slice(prefix.length) : key;
+      try {
+        await runExclusive(() =>
+          processConversation(inbox, { memberId, name: name ?? `ID:${memberId}`, unread: false })
+        );
+        synced++; // batch は「実際に再読した件数」で数える（スキップは無コストなので数えない）
+      } catch (e) {
+        console.error(`再同期失敗 [${inbox.name}][${memberId}]:`, String(e).slice(0, 200));
+        synced++; // 失敗も検索コストは発生しているので1件として数える（暴走防止）
+      }
+    }
+    resyncCursor.set(inbox.id, pos);
+  }
+}
+
 async function pollOnce(): Promise<void> {
   let playwrightSuspect = false;
   let cycleConvFailures = 0;
+  const processedThisCycle = new Set<string>();
 
   for (const inbox of inboxes) {
     if (shuttingDown) return;
@@ -190,6 +271,10 @@ async function pollOnce(): Promise<void> {
     let convFailures = 0;
     for (const conv of targets) {
       if (shuttingDown) return;
+      const ck = keyOf(inbox, conv.memberId);
+      processedThisCycle.add(ck);
+      // 未読＝顧客に新着がある＝「実活動」あり。再同期の対象選定（直近活動のあるトピックだけ）に使う
+      dbApi.touchActivity(ck);
       try {
         extracted += await runExclusive(() => processConversation(inbox, conv));
       } catch (e) {
@@ -235,6 +320,9 @@ async function pollOnce(): Promise<void> {
   if (playwrightSuspect) {
     await runExclusive(() => ensureLoggedIn(inboxes[0]));
   }
+  // 未読巡回のあとに、開いているトピックの双方向再同期（PC直返信・遅延新着の反映）を回す。内部で
+  // interval ゲートされるので毎巡回呼んでも実際に走るのは resyncIntervalMs ごと。
+  if (!shuttingDown) await resyncOpenTopics(processedThisCycle);
 }
 let prevOverLimit = false;
 
@@ -303,6 +391,10 @@ async function main(): Promise<void> {
     void runExclusive(() => sendReply(inbox, memberId, text))
       .then(() => {
         dbApi.deletePending(pendingId);
+        // この返信は次の読取で自分側吹き出しとして逆流する。二重表示を避けるため控えておく
+        recordSentEcho(key, text);
+        // オペレーターの返信＝実活動。再同期の対象に含める（PC直返信の反映にも効く）
+        dbApi.touchActivity(key);
         // 会話本文はログに残さない（PM2 のログは平文でディスクに蓄積されるため）
         console.log(`→ Lpro送信 [${inbox.name}][${name}] (${text.length}字)`);
         if (shuttingDown) return;

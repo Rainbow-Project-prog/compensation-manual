@@ -21,6 +21,15 @@ export const cfg = {
   // 停止中・稼働中に初めて現れた顧客（=いま送ってきた新規顧客）の初回配信件数。
   // 0にすると初回は何も配らない＝初回メッセージを取りこぼすので注意。
   bootstrapTail: num('BOOTSTRAP_TAIL', 5),
+  // 双方向再同期: 未読巡回から外れた（返信済み）顧客も、トピックがあれば定期的に再読して
+  // PC直返信・遅延新着を Telegram に反映する。RESYNC_BATCH=0 で無効化。
+  //  - resyncBatch は「受信箱ごと」1 interval あたりの会員ID検索の上限（実質 batch × 受信箱数）。
+  //  - resyncMaxMs は 1 tick 全体の壁時計上限。これを超えたら打ち切り、未読巡回の再開を遅らせない。
+  //  - resyncActiveWindowMs より古い（休眠）会話は再同期対象にしない＝負荷とレイテンシを一定に保つ。
+  resyncIntervalMs: Math.max(5000, num('RESYNC_INTERVAL_MS', 30000)),
+  resyncBatch: Math.max(0, num('RESYNC_BATCH', 5)),
+  resyncMaxMs: Math.max(3000, num('RESYNC_MAX_MS', 15000)),
+  resyncActiveWindowMs: Math.max(60000, num('RESYNC_ACTIVE_WINDOW_MS', 3 * 24 * 60 * 60 * 1000)),
 };
 
 /**

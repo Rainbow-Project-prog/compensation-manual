@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { decideDeliveryBySeen, type FpMsg } from '../src/logic.js';
+import { decideDeliveryBySeen, toConvMessages, type FpMsg, type ScanMsg } from '../src/logic.js';
 
 const msg = (h: string): FpMsg => ({ text: `本文${h}`, hash: h });
 const msgs = (...hs: string[]) => hs.map(msg);
@@ -82,4 +82,56 @@ test('同一本文・同一日時の連投はハッシュ連番で別メッセ�
 test('順序は入力の表示順を維持する', () => {
   const d = decideDeliveryBySeen(true, msgs('n1', 'k', 'n2'), seenSet('k'));
   assert.deepEqual(d.deliver.map((m) => m.hash), ['n1', 'n2']);
+});
+
+test('deliver は self などの追加フィールドを保ったまま返す（ジェネリック）', () => {
+  const items = [
+    { text: 'a', hash: 'a', self: false },
+    { text: 'b', hash: 'b', self: true },
+  ];
+  const d = decideDeliveryBySeen(true, items, seenSet('a'));
+  assert.deepEqual(d.deliver, [{ text: 'b', hash: 'b', self: true }]);
+});
+
+// --- toConvMessages（双方向フィンガープリント） ---
+
+const scan = (inbound: boolean, text: string, dt: string, hasImage = false): ScanMsg => ({ inbound, text, dt, hasImage });
+
+test('★顧客側(inbound)のハッシュ式は不変（既存台帳と一致・回帰防止）', () => {
+  // この値が変わると、アップグレード時に全顧客の窓内メッセージが一斉再配信される（誤配信）
+  const [m] = toConvMessages('chat', '123', [scan(true, 'こんにちは', '07/04 22:04')]);
+  assert.equal(m.hash, '0a5c4c157663f366985953c1debb7aaee4a726b3');
+  assert.equal(m.self, false);
+});
+
+test('自分側(self)は方向入りの別ハッシュ・self=true', () => {
+  const [m] = toConvMessages('chat', '123', [scan(false, 'こんにちは', '07/04 22:04')]);
+  assert.equal(m.hash, '40da39411a761ba52baedb3d3f9dd89df7d6e0f8');
+  assert.equal(m.self, true);
+});
+
+test('顧客と自分が同一日時・同一本文でも別メッセージ（方向で衝突しない）', () => {
+  // 実DOMは新→旧。時系列昇順に直り、両方が別ハッシュで残る
+  const out = toConvMessages('chat', '123', [scan(false, '了解です', '07/04 22:04'), scan(true, '了解です', '07/04 22:04')]);
+  assert.equal(out.length, 2);
+  assert.notEqual(out[0].hash, out[1].hash);
+  assert.deepEqual(out.map((m) => m.self), [false, true]); // 昇順: 顧客(先)→自分(後)
+});
+
+test('自分側の同文連投も :連番 で別メッセージ', () => {
+  const out = toConvMessages('chat', '123', [scan(false, 'はい', '07/04 22:04'), scan(false, 'はい', '07/04 22:04')]);
+  assert.equal(out.length, 2);
+  assert.notEqual(out[0].hash, out[1].hash);
+  assert.ok(out[1].hash.endsWith(':1'));
+});
+
+test('本文なし画像/スタンプは自分側でもプレースホルダで残る', () => {
+  const [m] = toConvMessages('chat', '123', [scan(false, '', '07/04 22:04', true)]);
+  assert.ok(m.text.includes('画像/スタンプ'));
+  assert.equal(m.self, true);
+});
+
+test('本文も画像も無い空吹き出しは捨てる', () => {
+  const out = toConvMessages('chat', '123', [scan(true, '', '07/04 22:04', false)]);
+  assert.deepEqual(out, []);
 });
