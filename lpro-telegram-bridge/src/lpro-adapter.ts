@@ -1,4 +1,6 @@
 import { chromium, type BrowserContext, type Page, type Frame, type Locator } from 'playwright';
+import { execFile } from 'node:child_process';
+import { resolve } from 'node:path';
 import { toConvMessages, type ScanMsg, type ConvMsg } from './logic.js';
 import { cfg, SELECTORS, SEND_ACCEPT_RE, DISPLAY_LIMIT, httpCredentials, inboxes, type Inbox } from './config.js';
 
@@ -36,6 +38,30 @@ function clean(s: string | null | undefined): string {
   return (s ?? '').trim().replace(/\s+/g, ' ');
 }
 
+/**
+ * クラッシュ（graceful shutdown を経ない強制終了）で残った Playwright の chromium は、この
+ * プロファイル（userDataDir）のロックを掴んだままになり、次回 launchPersistentContext を失敗させる。
+ * 待つだけでは解放されないので、userDataDir を --user-data-dir に持つ chrome.exe だけを狙って終了する。
+ * ユーザーの通常 Chrome は別プロファイルなのでコマンドライン一致せず対象外。Windows 専用（対象外OSは何もしない）。
+ */
+async function killStaleProfileChromium(): Promise<void> {
+  if (process.platform !== 'win32') return;
+  const dir = resolve(cfg.userDataDir);
+  const pattern = `*${dir.replace(/'/g, "''")}*`; // PowerShell 単一引用符のエスケープ
+  const psCmd =
+    `Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" | ` +
+    `Where-Object { $_.CommandLine -like '${pattern}' } | ` +
+    `ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`;
+  await new Promise<void>((res) => {
+    execFile(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', psCmd],
+      { timeout: 15_000, windowsHide: true },
+      () => res() // 失敗しても launch リトライに委ねる（例外にしない）
+    );
+  });
+}
+
 export async function initBrowser(): Promise<void> {
   if (inboxes.length === 0) {
     throw new Error(
@@ -66,7 +92,9 @@ export async function initBrowser(): Promise<void> {
       break;
     } catch (e) {
       if (attempt === 5) throw e;
-      console.warn(`ブラウザ起動に失敗（プロファイルのロック解放待ちの可能性）。${attempt}/5、3秒後に再試行します: ${String(e).slice(0, 120)}`);
+      console.warn(`ブラウザ起動に失敗（プロファイルのロック競合の可能性）。残存chromiumを掃除して ${attempt}/5、3秒後に再試行します: ${String(e).slice(0, 120)}`);
+      // 強制終了（クラッシュ）で残った chromium はロックを掴んだまま解放しないので、掃除してから待つ
+      await killStaleProfileChromium();
       await new Promise((r) => setTimeout(r, 3000));
     }
   }
