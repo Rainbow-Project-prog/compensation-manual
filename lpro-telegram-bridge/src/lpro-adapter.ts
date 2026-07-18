@@ -490,6 +490,42 @@ export async function readInbound(inbox: Inbox, conv: Conversation): Promise<Inb
 }
 
 /**
+ * 掘り起こし用: 会員IDで開いて「表示名 + 直近の会話」を読む。見つからなければ throw（openMember が投げる）。
+ * readInbound とほぼ同じだが、トピック名に使う表示名も同時に取る。
+ */
+export async function readMember(inbox: Inbox, memberId: string): Promise<{ name: string; inbound: InboundMsg[] }> {
+  const f = await openMember(inbox, memberId);
+  const row = await findRow(f, memberId, inbox);
+  const scanned = await row.evaluate(
+    (rowEl, S) => {
+      const name = (rowEl.querySelector(S.customerName)?.textContent ?? '').trim().replace(/\s+/g, ' ').slice(0, 60);
+      const out: Array<{ inbound: boolean; text: string; dt: string; hasImage: boolean }> = [];
+      for (const g of rowEl.querySelectorAll(S.messageGroup)) {
+        const bubble = g.querySelector(S.bubble);
+        if (!bubble) continue;
+        const dt = Array.from(g.querySelectorAll(S.msgDatetime))
+          .map((d) => (d.textContent ?? '').trim().replace(/\s+/g, ' ')).join(' ').trim();
+        out.push({
+          inbound: g.classList.contains(S.inboundGroupClass),
+          text: (bubble.textContent ?? '').trim().replace(/\s+/g, ' '),
+          dt,
+          hasImage: bubble.querySelector('img') !== null,
+        });
+      }
+      return { name, scans: out };
+    },
+    {
+      customerName: SELECTORS.customerName,
+      messageGroup: SELECTORS.messageGroup,
+      inboundGroupClass: SELECTORS.inboundGroupClass,
+      bubble: SELECTORS.bubble,
+      msgDatetime: SELECTORS.msgDatetime,
+    }
+  );
+  return { name: scanned.name, inbound: toConvMessages(inbox.id, memberId, scanned.scans) };
+}
+
+/**
  * 返信を送信し、成功を検証する。行は会員IDで特定し（findRow が同一性検証済み）、
  * 入力・クリックはその行スコープのみ。ページ先頭の「一括返信」フォームには構造上届かない。
  */

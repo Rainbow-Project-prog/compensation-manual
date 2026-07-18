@@ -1,5 +1,5 @@
 import { Bot, GrammyError, HttpError } from 'grammy';
-import { cfg, inboxes } from './config.js';
+import { cfg, inboxes, inboxByGroup } from './config.js';
 import { dbApi } from './db.js';
 
 export const bot = new Bot(cfg.telegramToken);
@@ -15,6 +15,10 @@ const KNOWN_GROUPS = new Set(inboxes.map((i) => i.groupChatId));
 type ReplyHandler = (inboxId: string, memberId: string, name: string, text: string) => void;
 let onReply: ReplyHandler = () => {};
 export function setReplyHandler(h: ReplyHandler) { onReply = h; }
+
+type DigHandler = (inboxId: string, memberId: string) => Promise<{ ok: boolean; name?: string; error?: string }>;
+let onDig: DigHandler = async () => ({ ok: false, error: 'ブリッジ準備中です' });
+export function setDigHandler(h: DigHandler) { onDig = h; }
 
 const MAX_WAIT_MS = 60_000;
 
@@ -139,6 +143,32 @@ function splitKey(key: string): { inboxId: string; memberId: string } {
     ? { inboxId: '', memberId: key }
     : { inboxId: key.slice(0, idx), memberId: key.slice(idx + 1) };
 }
+
+/**
+ * 掘り起こし: /dig <会員ID> を対象グループで送ると、その受信箱で会員を開いてトピックを用意する。
+ * ★ message:text ハンドラより前に登録すること（コマンドをここで消費し、返信として Lpro へ送らせない）。
+ * 受信箱はコマンドを送ったグループから自動判別する。時間のかかる会員ID検索でポーリングを塞がない
+ * よう、受付だけ即返しして本処理はバックグラウンドで走らせ、完了時に結果を返信する。
+ */
+bot.command('dig', async (ctx) => {
+  if (!KNOWN_GROUPS.has(ctx.chat.id)) return; // 監視対象グループ以外は無視（＝コマンドも消費して黙る）
+  const threadId = ctx.message?.message_thread_id;
+  const replyOpts = threadId ? { message_thread_id: threadId } : {};
+  const say = (t: string) => ctx.reply(t, replyOpts).catch(() => {});
+  const inbox = inboxByGroup(ctx.chat.id);
+  if (!inbox) { await say('⚠️ このグループは監視対象の受信箱に紐付いていません。'); return; }
+  const memberId = (ctx.match ?? '').trim();
+  if (!/^\d+$/.test(memberId)) {
+    await say('使い方: /dig <会員ID>（数字）。例: /dig 510654');
+    return;
+  }
+  await say(`🔎 会員ID ${memberId} を「${inbox.name}」で開いています…`);
+  void onDig(inbox.id, memberId)
+    .then((res) => res.ok
+      ? say(`✅ ${res.name ?? memberId} のトピックを用意しました。トピック一覧から開いて返信すると掘り起こしメッセージが送れます。`)
+      : say(`⚠️ 開けませんでした: ${res.error ?? '不明なエラー'}`))
+    .catch((e) => say(`⚠️ 掘り起こしでエラー: ${String(e).slice(0, 150)}`));
+});
 
 /** 人が打った返信を拾う（トピック内のテキストのみ） */
 bot.on('message:text', async (ctx) => {
