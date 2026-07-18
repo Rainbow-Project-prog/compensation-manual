@@ -5,10 +5,10 @@ import { decideDeliveryBySeen } from './logic.js';
 import { runDoctor, printResult } from './preflight.js';
 import {
   initBrowser, closeBrowser, isBrowserGoneError, pageGone, ensureLoggedIn, setLoginNotifier,
-  pollConversations, readInbound, readMember, sendReply, pollHitLimit, listAllMemberIds, type Conversation,
+  pollConversations, readInbound, sendReply, pollHitLimit, listAllMemberIds, type Conversation,
 } from './lpro-adapter.js';
 import {
-  startBot, stopBot, setReplyHandler, setDigHandler, ensureTopic, pushInbound, reopenTopic, notifyOps,
+  startBot, stopBot, setReplyHandler, ensureTopic, pushInbound, reopenTopic, notifyOps,
   isThreadNotFoundError, isTopicClosedError, isTelegramError,
 } from './telegram.js';
 
@@ -199,49 +199,6 @@ async function processConversation(inbox: Inbox, conv: Conversation): Promise<nu
   }
   dbApi.pruneSeen(key);
   return inbound.length;
-}
-
-/**
- * 掘り起こし（/dig <会員ID>）: 指定会員のトークを会員ID検索で開いてトピックを用意する。
- * 初めて開くトピックには直近のやり取りを「参考」として一度だけ流し、その窓を既知化して
- * 巡回/再同期の重複配信を防ぐ。以後はこのトピックで返信すると通常の送信フローで届く。
- */
-async function digUp(inbox: Inbox, memberId: string): Promise<{ ok: boolean; name?: string; error?: string }> {
-  const key = keyOf(inbox, memberId);
-  let read: { name: string; inbound: Awaited<ReturnType<typeof readMember>>['inbound'] };
-  try {
-    read = await runExclusive(() => readMember(inbox, memberId));
-  } catch (e) {
-    return { ok: false, error: String(e).slice(0, 200) };
-  }
-  const { inbound } = read;
-  const displayName = read.name || `ID:${memberId}`;
-  dbApi.upsert(key, displayName);
-  const existing = dbApi.get(key);
-  const wasNew = !existing?.topic_thread_id;
-  const threadId = await ensureTopic(key, `${displayName}（${memberId}）`, inbox.groupChatId);
-  await pushInbound(inbox.groupChatId, threadId,
-    `🔸 掘り起こしで開きました（会員ID: ${memberId}）。このトピックで返信すると ${displayName} に送信されます。`);
-  if (wasNew) {
-    // 初回だけ直近履歴を参考として流し、その窓を既知化（bidi 巡回/再同期の重複配信を防ぐ）
-    if (inbound.length > 0) {
-      await pushInbound(inbox.groupChatId, threadId, '——— 参考: 直近のやり取り ———');
-      for (const m of inbound) {
-        await pushInbound(inbox.groupChatId, threadId, m.self ? SELF_PREFIX + m.text : m.text).catch(() => {});
-      }
-      await pushInbound(inbox.groupChatId, threadId, '————————————————');
-    }
-    for (const m of inbound) dbApi.addSeen(key, m.hash);
-    dbApi.setSeen(key, inbound.length, 1);
-    dbApi.setSelfSeeded(key);
-    dbApi.pruneSeen(key);
-  } else if (!existing?.self_seeded) {
-    // 既存トピックだが自分側 baseline 未確立なら確立（移行ガード相当）。既知の配信状態は保つ
-    for (const m of inbound) if (m.self) dbApi.addSeen(key, m.hash);
-    dbApi.setSelfSeeded(key);
-  }
-  dbApi.touchActivity(key); // 再同期の対象に含める
-  return { ok: true, name: displayName };
 }
 
 // 無音障害の自己申告用カウンタ
@@ -459,14 +416,6 @@ async function main(): Promise<void> {
         }
       });
   });
-
-  // 掘り起こし（/dig <会員ID>）: 対象グループから受信箱を判別し、指定会員のトピックを用意する
-  setDigHandler((inboxId, memberId) => {
-    const inbox = inboxById(inboxId);
-    if (!inbox) return Promise.resolve({ ok: false, error: `受信箱が不明です（${inboxId}）` });
-    return digUp(inbox, memberId);
-  });
-
   // ポーリング停止（401/409等）は半死に状態にせず、明示的に落として PM2 に再起動させる
   await startBot((e) => { void shutdown(`TELEGRAM_FATAL: ${String(e).slice(0, 80)}`, 1); });
 
