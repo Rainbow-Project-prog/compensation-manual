@@ -176,3 +176,9 @@ export const SELECTORS = {
 
 // 表示上限（limitLarge=500件）。巡回でこの件数に達したら「打ち切りの可能性」を警告する
 export const DISPLAY_LIMIT = 500;
+
+// 返信送信の受理シグナル（2026-07-18 診断で判明）。送信ボタンは chatframe への form POST ではなく、
+// AJAX で /manage/json/<名前>_send（トーク=line_send / チャット=chat_send）へ POST する。この応答が
+// 200 で返れば Lpro が返信を受理した＝送信成功。受信箱に依らず「<名前>_send」を受理エンドポイントとみなす。
+// （line_talk_lst 等の一覧更新 POST は send を含まないのでマッチしない）
+export const SEND_ACCEPT_RE = /\/manage\/json\/[a-z]+_send\b/i;

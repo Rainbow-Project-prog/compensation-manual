@@ -1,6 +1,6 @@
 import { chromium, type BrowserContext, type Page, type Frame, type Locator } from 'playwright';
 import { toConvMessages, type ScanMsg, type ConvMsg } from './logic.js';
-import { cfg, SELECTORS, DISPLAY_LIMIT, httpCredentials, inboxes, type Inbox } from './config.js';
+import { cfg, SELECTORS, SEND_ACCEPT_RE, DISPLAY_LIMIT, httpCredentials, inboxes, type Inbox } from './config.js';
 
 /** conv.memberId は Lpro の会員ID（受信箱に依らず顧客不変）。DBキーは inbox 込みで index.ts が合成。
  * inbound は巡回時に一括抽出済みの顧客発言（共有画面の割り込み競合を避けるため poll 内で確定させる）。
@@ -488,17 +488,24 @@ export async function sendReply(inbox: Inbox, memberId: string, text: string): P
   const onDialog = (d: import('playwright').Dialog) => { void d.accept().catch(() => {}); };
   p.once('dialog', onDialog);
   try {
-    // ★主シグナル: 送信ボタンは per-row フォームを POST(target=chatframe) する。この POST 応答が
-    // 200 で返れば Lpro が返信を受理した＝送信成功。吹き出しの表示タイミングに依存せず確実。
-    // （吹き出しでの確認は表示が遅れると偽陰性→二重送信を招くため主シグナルにしない）
+    // 送信中に飛んだ POST を控える（送信確認NG時のデバッグに残す。会話本文は URL に載らない）
+    const sentPosts: string[] = [];
+    const onResp = (r: import('playwright').Response) => {
+      if (r.request().method() === 'POST') sentPosts.push(`${r.status()} ${r.url()}`);
+    };
+    p.on('response', onResp);
+    // ★主シグナル: 送信ボタンは（chatframe への form POST ではなく）AJAX で /manage/json/<名前>_send へ
+    // POST する。この応答が 200 で返れば Lpro が返信を受理した＝送信成功。吹き出しの表示タイミングに
+    // 依存せず確実（吹き出しでの確認は表示が遅れると偽陰性→二重送信を招くため主シグナルにしない）。
     const respP = p
       .waitForResponse(
-        (r) => inbox.chatframeRe.test(r.url()) && r.request().method() === 'POST',
+        (r) => SEND_ACCEPT_RE.test(r.url()) && r.request().method() === 'POST',
         { timeout: 15_000 }
       )
       .catch(() => null);
     await row.locator(SELECTORS.sendButton).first().click();
     const resp = await respP;
+    p.off('response', onResp);
 
     if (resp && resp.status() < 400) {
       console.log(`送信確認OK[${inbox.name}]（Lproが返信を受理: HTTP ${resp.status()}）`);
@@ -521,6 +528,8 @@ export async function sendReply(inbox: Inbox, memberId: string, text: string): P
         return;
       }
     }
+    // 受理エンドポイントが変わった等の切り分けのため、送信中に飛んだ POST を残す（会話本文は含まない）
+    console.warn(`[${inbox.name}] 送信確認NG（${lastReason}）。捕捉したPOST: ${sentPosts.join(' , ') || '(none)'}`);
     throw new Error(
       `${inbox.name}: 送信を確認できませんでした（${lastReason}）。` +
       '⚠️ 実際には送信されている可能性もあります。再送する前に必ず Lpro の画面で確認してください'
