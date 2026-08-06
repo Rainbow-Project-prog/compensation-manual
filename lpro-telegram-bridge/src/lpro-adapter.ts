@@ -271,6 +271,58 @@ async function applySearch(
 }
 
 /**
+ * chatframe の全顧客行の会話履歴を描画させてから読むための前処理（2026-08-06 実機で判明した罠）。
+ * Lpro の一覧は「画面に入った行／直近に動きのあった行」しか会話履歴を描画せず、画面外の行は
+ * メッセージ要素が空のまま＝そのまま抽出すると「メッセージ0件」に見える。8/6 の8日ぶり再起動では
+ * 未読22件中、一覧上位の2行しか読めなかった（残りは新着や返信で行が浮上した瞬間に初めて読めた）。
+ * 未描画の行だけを scrollIntoView で順に画面へ入れ、未描画数が減らなくなるまで（時間上限つき）待つ。
+ * 全行描画済みなら即 return＝定常時の追加コストはゼロ。
+ */
+async function renderAllRows(inbox: Inbox, f: Frame): Promise<void> {
+  const S = {
+    conversationItem: SELECTORS.conversationItem,
+    memberIdText: SELECTORS.memberIdText,
+    messageGroup: SELECTORS.messageGroup,
+  };
+  // 会員IDを持つのに会話履歴が1件も無い行のインデックス一覧（一括返信行は対象外）
+  const listEmpty = (): Promise<number[]> =>
+    f.evaluate((S) => {
+      const idx: number[] = [];
+      Array.from(document.querySelectorAll(S.conversationItem)).forEach((row, i) => {
+        if (!(row.querySelector(S.memberIdText)?.textContent ?? '').trim()) return;
+        if (row.querySelectorAll(S.messageGroup).length === 0) idx.push(i);
+      });
+      return idx;
+    }, S);
+
+  let empty = await listEmpty();
+  if (empty.length === 0) return;
+  const deadline = Date.now() + 20_000;
+  let prev = Infinity;
+  while (empty.length > 0 && empty.length < prev && Date.now() < deadline) {
+    prev = empty.length;
+    for (const i of empty) {
+      if (Date.now() > deadline) break;
+      await f.evaluate(
+        (a) => { Array.from(document.querySelectorAll(a.sel))[a.i]?.scrollIntoView({ block: 'center' }); },
+        { sel: S.conversationItem, i }
+      );
+      await f.waitForTimeout(300); // 1行ずつ viewport を通し、遅延ロードの発火を待つ
+    }
+    await f.waitForTimeout(700); // 発火済みのロードが着弾するのを待ってから数え直す
+    empty = await listEmpty();
+  }
+  if (empty.length > 0) {
+    warnOnce(
+      `unrendered-${inbox.id}`,
+      `${inbox.name}: スクロールしても会話履歴が描画されない行が ${empty.length} 件あります（該当行は取り込みを見送り、描画され次第取り込みます）`
+    );
+  }
+  // 先頭へ戻す（以降の行スコープ操作を実機確認しやすくする。失敗しても実害なし）
+  await f.evaluate(() => { (document.scrollingElement ?? document.documentElement).scrollTop = 0; }).catch(() => {});
+}
+
+/**
  * 指定受信箱の顧客行一覧を、各顧客の会話履歴（inbound）まで含めて1回の evaluate で取得する。
  * ★1パス抽出★ 顧客ごとに画面を開き直さないので、返信(openMember)が割り込んで表示が
  * 対象1名に絞られても、この巡回で取った各顧客のデータは揺らがない（共有画面の競合を根絶）。
@@ -278,6 +330,8 @@ async function applySearch(
  */
 export async function pollConversations(inbox: Inbox): Promise<Conversation[]> {
   const f = await applySearch(inbox, { memberId: '', unreadOnly: cfg.onlyUnread });
+  // 画面外の行の会話履歴を描画させてから抽出する（未描画行を「0件」と誤認しないため）
+  await renderAllRows(inbox, f);
   const rows: RowScan[] = await f.evaluate(
     (S) => {
       const out: Array<{ key: string; name: string; status: string;

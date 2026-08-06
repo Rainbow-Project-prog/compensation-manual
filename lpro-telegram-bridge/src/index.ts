@@ -134,6 +134,10 @@ async function processConversation(inbox: Inbox, conv: Conversation): Promise<nu
   // 巡回経路は pollConversations が1パスで抽出済み（conv.inbound）。返信後の単発再取り込み等で
   // inbound 未添付なら会員ID検索で読む
   const inbound = conv.inbound ?? await readInbound(inbox, conv);
+  // 未読なのに1件も抽出できない行は、履歴の遅延描画がまだ（画面外・ロード中）の可能性が高い。
+  // このまま進めると「空のベースライン」で bootstrapped 化され、実在する未読メッセージが
+  // 配信されないまま既読相当になる（2026-08-06 の実機事故）。何もせず後続サイクルに委ねる
+  if (conv.unread && inbound.length === 0) return 0;
   const cust = dbApi.get(key)!;
 
   // 移行ガード（双方向同期）: 自分側発言は従来フィンガープリント化されていなかったため、既存(bootstrap済)
