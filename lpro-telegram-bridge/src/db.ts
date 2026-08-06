@@ -174,6 +174,12 @@ export const dbApi = {
     db.prepare('DELETE FROM sent_echoes WHERE created_at < ?').run(Date.now() - ttlMs),
 };
 
+/** ホットバックアップ。WAL 稼働中の単純ファイルコピーは不整合なコピーを生むため、
+ * オンラインバックアップとして安全な VACUUM INTO を使う（宛先ファイルは存在してはならない） */
+export function backupTo(destPath: string): void {
+  db.prepare('VACUUM INTO ?').run(destPath);
+}
+
 /** 終了時に呼ぶ。WAL を確定してファイルを閉じる */
 export function closeDb(): void {
   try { db.close(); } catch { /* already closed */ }

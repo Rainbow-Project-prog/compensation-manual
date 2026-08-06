@@ -424,10 +424,16 @@ async function openMember(inbox: Inbox, memberId: string): Promise<Frame> {
   const row = f
     .locator(SELECTORS.conversationItem)
     .filter({ has: f.locator(SELECTORS.memberIdText).getByText(memberId, { exact: true }) });
-  if (await row.count().catch(() => 0) >= 1) return f;
-  throw new Error(
-    `${inbox.name}: 会員ID=${memberId} を検索しても行が出ません（この受信箱に居ない/存在しない会員IDの可能性）`
-  );
+  // 検索POSTの応答が返っても行の描画は一拍遅れる。即時 count() は描画レースで
+  // 実在する会員でも恒常的に空振りする（12日間で181件の誤失敗）ため、出現を待って判定する
+  try {
+    await row.first().waitFor({ state: 'attached', timeout: 5000 });
+    return f;
+  } catch {
+    throw new Error(
+      `${inbox.name}: 会員ID=${memberId} を検索しても行が出ません（この受信箱に居ない/存在しない会員IDの可能性）`
+    );
+  }
 }
 
 /**

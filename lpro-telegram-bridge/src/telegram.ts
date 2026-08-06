@@ -100,10 +100,13 @@ export async function pushInbound(groupChatId: number, threadId: number, text: s
   }
 }
 
-/** 運用通知。会話本文・顧客名は載せないこと。全受信箱グループへ送る（どこを見ていても気付ける） */
+/** 運用通知。会話本文・顧客名は載せないこと。全受信箱グループへ送る（どこを見ていても気付ける）。
+ * 運用通知は障害の自己申告そのものなので、一時エラー（429/5xx/ネットワーク断）は withRetry で
+ * 粘る（実際に素の1発送信は 2026-07 の実測で取りこぼしていた）。それでも失敗した場合は
+ * グループ単位で握りつぶす: 片方のグループ障害で、もう片方への通知まで道連れにしない。 */
 export async function notifyOps(text: string): Promise<void> {
   for (const inbox of inboxes) {
-    await bot.api.sendMessage(inbox.groupChatId, text)
+    await withRetry('notifyOps', () => bot.api.sendMessage(inbox.groupChatId, text))
       .catch((e) => console.error('運用通知の送信失敗:', String(e).slice(0, 120)));
   }
 }

@@ -32,6 +32,45 @@ export function decideDeliveryBySeen<T extends { hash: string }>(
   return { deliver: inbound.filter((m) => !hasSeen(m.hash)), bootstrap: false };
 }
 
+/**
+ * 配信メッセージ列を「1通の Telegram メッセージに連結するチャンク」に詰める（429対策）。
+ * 新規顧客の履歴一括配信（実測中央値41通）を1件1通で送ると Telegram のレート制限(429)を
+ * 連発する（2026-07-26 解析: 429 の85%がこの経路）ため、minBatch 件以上まとまっている場合
+ * だけ連結して通数を減らす。通常の新着（数件）は従来どおり1件1通＝見た目を変えない。
+ *
+ * 各チャンクの text は format 済み本文を sep で連結したもの。hashes はそのチャンクに
+ * 入ったメッセージのハッシュ列で、チャンク送信成功ごとにまとめて既知化するのは
+ * 呼び出し側（index.ts）の責務（途中失敗しても送信済みチャンク分は再配信されない）。
+ * 1件で maxChars を超えるメッセージは単独チャンクにする（送信時の4096字分割は pushInbound が行う）。
+ */
+export function packDeliveryChunks<T extends { hash: string }>(
+  messages: T[],
+  format: (m: T) => string,
+  opts: { minBatch?: number; maxChars?: number; sep?: string } = {}
+): Array<{ text: string; hashes: string[] }> {
+  const minBatch = opts.minBatch ?? 6;
+  const maxChars = opts.maxChars ?? 3500;
+  const sep = opts.sep ?? '\n\n';
+  if (messages.length < minBatch) {
+    return messages.map((m) => ({ text: format(m), hashes: [m.hash] }));
+  }
+  const chunks: Array<{ text: string; hashes: string[] }> = [];
+  let curText = '';
+  let curHashes: string[] = [];
+  for (const m of messages) {
+    const t = format(m);
+    if (curHashes.length > 0 && curText.length + sep.length + t.length > maxChars) {
+      chunks.push({ text: curText, hashes: curHashes });
+      curText = '';
+      curHashes = [];
+    }
+    curText = curHashes.length === 0 ? t : curText + sep + t;
+    curHashes.push(m.hash);
+  }
+  if (curHashes.length > 0) chunks.push({ text: curText, hashes: curHashes });
+  return chunks;
+}
+
 // ── フィンガープリント生成（純関数。Lpro/Telegram 非依存なのでここで単体テストする）──
 import { createHash } from 'node:crypto';
 

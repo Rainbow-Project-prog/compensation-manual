@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { decideDeliveryBySeen, toConvMessages, type FpMsg, type ScanMsg } from '../src/logic.js';
+import {
+  decideDeliveryBySeen, packDeliveryChunks, toConvMessages, type FpMsg, type ScanMsg,
+} from '../src/logic.js';
 
 const msg = (h: string): FpMsg => ({ text: `本文${h}`, hash: h });
 const msgs = (...hs: string[]) => hs.map(msg);
@@ -91,6 +93,49 @@ test('deliver は self などの追加フィールドを保ったまま返す（
   ];
   const d = decideDeliveryBySeen(true, items, seenSet('a'));
   assert.deepEqual(d.deliver, [{ text: 'b', hash: 'b', self: true }]);
+});
+
+// --- packDeliveryChunks（大量配信の429対策: 連結チャンク化） ---
+
+const fmt = (m: FpMsg) => m.text; // msg('a') → text='本文a'（3字）
+
+test('minBatch 未満は連結しない（通常の新着は従来どおり1件1通）', () => {
+  const out = packDeliveryChunks(msgs('a', 'b'), fmt, { minBatch: 6 });
+  assert.deepEqual(out, [
+    { text: '本文a', hashes: ['a'] },
+    { text: '本文b', hashes: ['b'] },
+  ]);
+});
+
+test('minBatch 以上は連結され、text とハッシュがチャンクに対応する', () => {
+  const out = packDeliveryChunks(msgs('a', 'b', 'c'), fmt, { minBatch: 3, maxChars: 1000, sep: '|' });
+  assert.deepEqual(out, [{ text: '本文a|本文b|本文c', hashes: ['a', 'b', 'c'] }]);
+});
+
+test('maxChars 超過で分割される（順序維持・ハッシュの取り落としなし）', () => {
+  // 本文x=3字, sep=1字 → 「本文a|本文b」=7字 は maxChars=8 に収まり、c を足すと11字で溢れる
+  const out = packDeliveryChunks(msgs('a', 'b', 'c', 'd'), fmt, { minBatch: 2, maxChars: 8, sep: '|' });
+  assert.deepEqual(out.map((c) => c.hashes), [['a', 'b'], ['c', 'd']]);
+  assert.deepEqual(out.map((c) => c.text), ['本文a|本文b', '本文c|本文d']);
+});
+
+test('1件で maxChars を超えるメッセージは単独チャンク（4096字分割は送信側の責務）', () => {
+  const big = { text: 'x'.repeat(50), hash: 'big' };
+  const out = packDeliveryChunks([big, ...msgs('a')], (m) => m.text, { minBatch: 2, maxChars: 10, sep: '|' });
+  assert.deepEqual(out.map((c) => c.hashes), [['big'], ['a']]);
+});
+
+test('ラベル付け（format）はチャンク連結前に1件ずつ適用される', () => {
+  const items = [
+    { text: 'a', hash: 'a', self: false },
+    { text: 'b', hash: 'b', self: true },
+  ];
+  const out = packDeliveryChunks(items, (m) => (m.self ? '🔷 ' + m.text : m.text), { minBatch: 2, sep: '|' });
+  assert.deepEqual(out, [{ text: 'a|🔷 b', hashes: ['a', 'b'] }]);
+});
+
+test('空入力は空配列', () => {
+  assert.deepEqual(packDeliveryChunks([], fmt), []);
 });
 
 // --- toConvMessages（双方向フィンガープリント） ---

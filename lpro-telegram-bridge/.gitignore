@@ -4,5 +4,6 @@ node_modules/
 bridge.db
 bridge.db-wal
 bridge.db-shm
+backups/
 *.log
 dump/

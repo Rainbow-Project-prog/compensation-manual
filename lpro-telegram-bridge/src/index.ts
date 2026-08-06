@@ -1,7 +1,8 @@
 import { cfg, inboxes, inboxById, type Inbox } from './config.js';
 import { dbApi, closeDb } from './db.js';
 import { runExclusive, drainQueue } from './queue.js';
-import { decideDeliveryBySeen } from './logic.js';
+import { decideDeliveryBySeen, packDeliveryChunks } from './logic.js';
+import { runBackup } from './backup.js';
 import { runDoctor, printResult } from './preflight.js';
 import {
   initBrowser, closeBrowser, isBrowserGoneError, pageGone, ensureLoggedIn, setLoginNotifier,
@@ -118,6 +119,9 @@ async function bootstrapAll(): Promise<void> {
   }
 }
 
+// 日次ハートビートで報告する稼働カウンタ（前回ハートビート以降の累計）
+const stats = { polls: 0, delivered: 0, sent: 0 };
+
 /**
  * 1会話分の取り込み。★必ず runExclusive(() => processConversation(...)) で呼ぶこと★
  * 既読の読取→配信→setSeen を1単位で直列化しないと、巡回と返信後取り込みが同一顧客で
@@ -171,16 +175,22 @@ async function processConversation(inbox: Inbox, conv: Conversation): Promise<nu
   if (toDeliver.length > 0) {
     // トピック名に会員IDを含めて同名顧客の取り違えを防ぐ。トピックは受信箱のグループへ作る
     const threadId = await ensureTopic(key, `${conv.name}（${conv.memberId}）`, inbox.groupChatId);
-    for (const m of toDeliver) {
-      // 自分側発言はラベルを付けて顧客の発言と区別する
-      const outText = m.self ? SELF_PREFIX + m.text : m.text;
+    // 大量配信（新規顧客の履歴一括など）を1件1通で送ると Telegram のレート制限(429)を連発する
+    // ため、まとまっている場合だけ複数件を1通に連結して通数を減らす。通常の新着は従来どおり1件1通。
+    // 自分側発言はラベルを付けて顧客の発言と区別する
+    const chunks = packDeliveryChunks(
+      toDeliver,
+      (m) => (m.self ? SELF_PREFIX + m.text : m.text),
+      { sep: '\n──────\n' }
+    );
+    for (const chunk of chunks) {
       try {
-        await pushInbound(inbox.groupChatId, threadId, outText);
+        await pushInbound(inbox.groupChatId, threadId, chunk.text);
       } catch (e) {
         if (isTopicClosedError(e)) {
           console.warn(`[${inbox.name}] トピックが閉じられています。開き直します: ${conv.name}`);
           await reopenTopic(inbox.groupChatId, threadId);
-          await pushInbound(inbox.groupChatId, threadId, outText);
+          await pushInbound(inbox.groupChatId, threadId, chunk.text);
         } else if (isThreadNotFoundError(e)) {
           console.warn(`[${inbox.name}] トピックが削除されています。次回作り直します: ${conv.name}`);
           dbApi.clearTopic(key);
@@ -189,8 +199,9 @@ async function processConversation(inbox: Inbox, conv: Conversation): Promise<nu
           throw e;
         }
       }
-      // 1件成功ごとに既知化: 途中で失敗しても、送信済み分を次回に再配信しない
-      dbApi.addSeen(key, m.hash);
+      stats.delivered++;
+      // チャンク成功ごとに既知化: 途中で失敗しても、送信済みチャンク分を次回に再配信しない
+      for (const h of chunk.hashes) dbApi.addSeen(key, h);
     }
   }
   if (!bootstrap) {
@@ -326,6 +337,48 @@ async function pollOnce(): Promise<void> {
 }
 let prevOverLimit = false;
 
+// ── 日次ティック: 定時ハートビート＋DBバックアップ ──
+// ブリッジの停止は死んだプロセス自身には通知できない（2026-07-29 のPC再起動でPM2ごと消えた
+// 8日間、誰も気付けなかった）。生存側からの定時通知の"欠落"だけが無音死のシグナルになるので、
+// 「毎日 DAILY_TICK_HOUR 時に💓が届く」を運用契約にする。
+function msUntilNextTick(hour: number): number {
+  const now = new Date();
+  const next = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, 0, 0, 0);
+  if (next.getTime() <= now.getTime()) next.setDate(next.getDate() + 1);
+  return next.getTime() - now.getTime();
+}
+
+async function dailyTick(): Promise<void> {
+  let backupNote: string;
+  try {
+    backupNote = runBackup(cfg.backupRetain)
+      ? 'DBバックアップOK'
+      : 'DBバックアップOK（本日分は作成済み）';
+  } catch (e) {
+    console.error('DBバックアップ失敗:', e);
+    backupNote = '⚠️ DBバックアップ失敗（ログを確認してください）';
+  }
+  await notifyOps(
+    `💓 定時ハートビート: ブリッジ稼働中（前回から: 巡回 ${stats.polls} 回 / Telegram配信 ${stats.delivered} 通 / ` +
+    `Lpro送信 ${stats.sent} 件 / ${backupNote}）。` +
+    'この通知が毎日この時刻に届かなくなったら、ブリッジが止まっています。PC と PM2 を確認してください。'
+  );
+  stats.polls = 0;
+  stats.delivered = 0;
+  stats.sent = 0;
+}
+
+function scheduleDailyTick(): void {
+  if (cfg.dailyTickHour < 0 || shuttingDown) return;
+  // 毎回「次の該当時刻」を取り直す1発タイマーの連鎖にする（setInterval だと時刻合わせできず、
+  // スリープ復帰などで発火時刻がずれても自己補正されない）
+  setTimeout(() => {
+    void dailyTick()
+      .catch((e) => console.error('日次ティック失敗:', e))
+      .finally(scheduleDailyTick);
+  }, msUntilNextTick(cfg.dailyTickHour));
+}
+
 async function main(): Promise<void> {
   // PM2 経由は npm の prestart(doctor) を通らないため、ここでも必ずチェックする
   const pre = runDoctor();
@@ -397,6 +450,7 @@ async function main(): Promise<void> {
         dbApi.touchActivity(key);
         // 会話本文はログに残さない（PM2 のログは平文でディスクに蓄積されるため）
         console.log(`→ Lpro送信 [${inbox.name}][${name}] (${text.length}字)`);
+        stats.sent++;
         if (shuttingDown) return;
         // 返信で相手が返信済みになり未返信一覧から外れても、inbound 未添付で渡すと
         // processConversation が会員ID検索で読み直すため、直前の新着を取りこぼさない
@@ -437,12 +491,17 @@ async function main(): Promise<void> {
     }
   }
 
+  // 起動直後に当日分のバックアップを確保する（「バックアップ皆無」の期間を作らない）。以後は日次ティック
+  try { runBackup(cfg.backupRetain); } catch (e) { console.error('起動時DBバックアップ失敗:', e); }
+  scheduleDailyTick();
+
   // Lpro → Telegram（巡回）
   console.log('巡回開始');
   let consecutiveFailures = 0;
   while (!shuttingDown) {
     try {
       await pollOnce();
+      stats.polls++;
       consecutiveFailures = 0;
     } catch (e) {
       console.error('poll error:', e);

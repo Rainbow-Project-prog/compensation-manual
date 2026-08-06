@@ -30,6 +30,12 @@ export const cfg = {
   resyncBatch: Math.max(0, num('RESYNC_BATCH', 5)),
   resyncMaxMs: Math.max(3000, num('RESYNC_MAX_MS', 15000)),
   resyncActiveWindowMs: Math.max(60000, num('RESYNC_ACTIVE_WINDOW_MS', 3 * 24 * 60 * 60 * 1000)),
+  // 日次ティック（定時ハートビート＋DBバックアップ）を実行するローカル時刻（0〜23）。負数で無効。
+  // ブリッジの停止は死んだプロセス自身には通知できない: 「毎日この時刻に💓が届く」契約にして、
+  // 通知の"欠落"で無音死に気付けるようにする（2026-07-29〜08-06 の8日間無音停止の再発防止）
+  dailyTickHour: Math.min(23, num('DAILY_TICK_HOUR', 9)),
+  // DBバックアップの保持世代数（1日1世代）
+  backupRetain: Math.max(1, num('BACKUP_RETAIN', 14)),
 };
 
 /**
