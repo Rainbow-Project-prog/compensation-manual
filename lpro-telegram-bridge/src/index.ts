@@ -225,6 +225,27 @@ let lastTopicFailNotifyAt = 0;
 // PC直返信・遅延新着を Telegram へ反映する。会員ID検索が要るので batch 件/interval に絞り負荷を抑える。
 let lastResyncAt = 0;
 const resyncCursor = new Map<string, number>(); // inbox.id -> ラウンドロビン位置
+
+// 再同期の連続失敗バックオフ: L-Pro 側から消えた会員（退会・アカウント削除）はトピックが開いて
+// いる限り検索し続けても行が出ず、1回の失敗ごとに会員ID検索＋出現待ち5秒を浪費して resyncMaxMs の
+// 壁時計上限を食い潰す（他の顧客の再同期まで遅らせる）うえ、活動ウィンドウを抜けるまで数十分おきに
+// エラーログが出続ける（2026-08-12 会員500372で実測6連発）。連続失敗キーは指数的に間隔を空けて
+// 再試行し、成功または実活動（未読で再出現・オペレーター返信）で即解除する。メモリ保持で十分
+// （再起動時はやり直しになるだけで、失敗がまだ続くなら数回で再びバックオフに入る）。
+// 注意2点（アドバーサリアルレビュー反映）:
+//  - Telegram 側・ブラウザ喪失のエラーは「会員が消えた」証拠にならないのでストリークに数えない
+//    （数えると障害復旧後も配信待ちキーだけが残存バックオフで数十分〜黙って遅れる退行になる）。
+//  - 基底はラウンドロビンの実再訪周期（開トピック数百件で実測約80分）より長くないと一度も
+//    スキップされず無効。2時間開始なら、バックオフ入り自体に失敗が約80分持続する必要があり、
+//    一時的な描画遅延で実在会員が誤って長期休止に入ることも構造的に防げる。
+const resyncFailStreak = new Map<string, number>();
+const resyncSkipUntil = new Map<string, number>();
+const RESYNC_BACKOFF_BASE_MS = 2 * 3_600_000;
+const RESYNC_BACKOFF_CAP_MS = 24 * 3_600_000;
+function clearResyncBackoff(key: string): void {
+  resyncFailStreak.delete(key);
+  resyncSkipUntil.delete(key);
+}
 async function resyncOpenTopics(processedThisCycle: Set<string>): Promise<void> {
   if (cfg.resyncBatch <= 0) return;
   if (Date.now() - lastResyncAt < cfg.resyncIntervalMs) return;
@@ -249,14 +270,35 @@ async function resyncOpenTopics(processedThisCycle: Set<string>): Promise<void> 
       scanned++;
       // 今サイクルの未読巡回で処理済みの顧客は二度読みしない（コスト節約）
       if (processedThisCycle.has(key)) continue;
+      // 連続失敗中のキーはバックオフが明けるまで飛ばす（スキップは無コストなので synced に数えない）
+      if ((resyncSkipUntil.get(key) ?? 0) > Date.now()) continue;
       const memberId = key.startsWith(prefix) ? key.slice(prefix.length) : key;
       try {
         await runExclusive(() =>
           processConversation(inbox, { memberId, name: name ?? `ID:${memberId}`, unread: false })
         );
+        clearResyncBackoff(key);
         synced++; // batch は「実際に再読した件数」で数える（スキップは無コストなので数えない）
       } catch (e) {
-        console.error(`再同期失敗 [${inbox.name}][${memberId}]:`, String(e).slice(0, 200));
+        // Telegram 障害・ブラウザ喪失は「会員が消えた」証拠にならない（上位の復旧処理に委ね、
+        // ストリークに数えない）。数えると配信待ちを抱えたキーだけが障害復旧後も休止で遅れる
+        if (isTelegramError(e) || isBrowserGoneError(e)) {
+          console.error(`再同期失敗 [${inbox.name}][${memberId}]:`, String(e).slice(0, 200));
+        } else {
+          const n = (resyncFailStreak.get(key) ?? 0) + 1;
+          resyncFailStreak.set(key, n);
+          if (n >= 2) {
+            const waitMs = Math.min(RESYNC_BACKOFF_BASE_MS * 2 ** (n - 2), RESYNC_BACKOFF_CAP_MS);
+            resyncSkipUntil.set(key, Date.now() + waitMs);
+            const dur = waitMs >= 3_600_000 ? `${Math.round(waitMs / 3_600_000)}時間` : `${Math.round(waitMs / 60_000)}分`;
+            console.error(
+              `再同期失敗 [${inbox.name}][${memberId}] (${n}回連続・以後約${dur}は再同期を休止。退会・削除済み会員の可能性):`,
+              String(e).slice(0, 200)
+            );
+          } else {
+            console.error(`再同期失敗 [${inbox.name}][${memberId}]:`, String(e).slice(0, 200));
+          }
+        }
         synced++; // 失敗も検索コストは発生しているので1件として数える（暴走防止）
       }
     }
@@ -290,6 +332,8 @@ async function pollOnce(): Promise<void> {
       processedThisCycle.add(ck);
       // 未読＝顧客に新着がある＝「実活動」あり。再同期の対象選定（直近活動のあるトピックだけ）に使う
       dbApi.touchActivity(ck);
+      // 実活動が確認できた＝消えた会員ではない。再同期バックオフを解除して即時同期に戻す
+      clearResyncBackoff(ck);
       try {
         extracted += await runExclusive(() => processConversation(inbox, conv));
       } catch (e) {
@@ -452,6 +496,7 @@ async function main(): Promise<void> {
         recordSentEcho(key, text);
         // オペレーターの返信＝実活動。再同期の対象に含める（PC直返信の反映にも効く）
         dbApi.touchActivity(key);
+        clearResyncBackoff(key);
         // 会話本文はログに残さない（PM2 のログは平文でディスクに蓄積されるため）
         console.log(`→ Lpro送信 [${inbox.name}][${name}] (${text.length}字)`);
         stats.sent++;
