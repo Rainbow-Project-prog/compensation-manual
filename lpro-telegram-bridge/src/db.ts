@@ -57,6 +57,9 @@ try { db.exec('ALTER TABLE customers ADD COLUMN self_seeded INTEGER NOT NULL DEF
 // 最後に「実活動」があった時刻（顧客の新着 or オペレーター返信）。双方向再同期の対象を
 // 直近活動のあるトピックだけに絞り、休眠会話を延々クロールしない/レイテンシを一定に保つため
 try { db.exec('ALTER TABLE customers ADD COLUMN last_activity INTEGER'); } catch { /* already exists */ }
+// Telegram トピック名に表示中のステータスマーカー（'pending'=🔴未対応 / 'done'=✅対応済み / NULL=未付与）。
+// L-Pro の henshin を正としたミラー。遷移時だけ editForumTopic を叩くための現在値
+try { db.exec('ALTER TABLE customers ADD COLUMN tg_marker TEXT'); } catch { /* already exists */ }
 
 export type Customer = {
   customer_key: string;
@@ -67,6 +70,7 @@ export type Customer = {
   seen_count: number;
   self_seeded: number;
   last_activity: number | null;
+  tg_marker: string | null;
 };
 
 export const dbApi = {
@@ -106,6 +110,19 @@ export const dbApi = {
          AND last_activity IS NOT NULL AND last_activity >= ?
        ORDER BY last_activity DESC`
     ).all(groupChatId, sinceMs) as Array<{ customer_key: string; name: string | null }>,
+  // トピック名に表示中のステータスマーカーを記録（遷移検知用）
+  setMarker: (key: string, marker: 'pending' | 'done') =>
+    db.prepare('UPDATE customers SET tg_marker=? WHERE customer_key=?').run(marker, key),
+  // ステータスマーカー同期の対象: トピックを持ち、(a)🔴表示のまま（対応済み反映待ちの可能性）
+  // または (b)直近に実活動がある顧客。休眠トピックを掘り返して一斉リネームしない（グループを
+  // サービスメッセージで荒らさない）ためのバウンド。直近活動順
+  listMarkerCandidates: (groupChatId: number, sinceMs: number) =>
+    db.prepare(
+      `SELECT customer_key AS key, name, tg_marker AS marker FROM customers
+       WHERE group_chat_id=? AND topic_thread_id IS NOT NULL
+         AND (tg_marker='pending' OR (last_activity IS NOT NULL AND last_activity >= ?))
+       ORDER BY last_activity DESC`
+    ).all(groupChatId, sinceMs) as Array<{ key: string; name: string | null; marker: string | null }>,
   // 返信の宛先解決: スレッドIDはグループ内でのみ一意なので、必ずグループでも絞る
   // （2グループ運用で thread_id が偶然一致しても別顧客に誤配信しないため）
   byThread: (groupChatId: number, threadId: number) =>

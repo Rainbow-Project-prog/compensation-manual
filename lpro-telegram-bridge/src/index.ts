@@ -1,16 +1,16 @@
 import { cfg, inboxes, inboxById, type Inbox } from './config.js';
 import { dbApi, closeDb } from './db.js';
 import { runExclusive, drainQueue } from './queue.js';
-import { decideDeliveryBySeen, packDeliveryChunks } from './logic.js';
+import { decideDeliveryBySeen, packDeliveryChunks, decideMarkerTransitions, type MarkerState } from './logic.js';
 import { runBackup } from './backup.js';
 import { runDoctor, printResult } from './preflight.js';
 import {
   initBrowser, closeBrowser, isBrowserGoneError, pageGone, ensureLoggedIn, setLoginNotifier,
-  pollConversations, readInbound, sendReply, pollHitLimit, listAllMemberIds, type Conversation,
+  pollConversations, readInbound, sendReply, pollHitLimit, pollHitLimitFor, listAllMemberIds, type Conversation,
 } from './lpro-adapter.js';
 import {
-  startBot, stopBot, setReplyHandler, ensureTopic, pushInbound, reopenTopic, notifyOps,
-  isThreadNotFoundError, isTopicClosedError, isTelegramError,
+  startBot, stopBot, setReplyHandler, ensureTopic, pushInbound, reopenTopic, renameTopic, retryAfterMs,
+  notifyOps, isThreadNotFoundError, isTopicClosedError, isTelegramError,
 } from './telegram.js';
 
 let shuttingDown = false;
@@ -28,6 +28,14 @@ let startupComplete = true;
 
 // 自分側（L-Pro/オペレーター）発言を Telegram に流すときのラベル。顧客の発言と一目で区別する
 const SELF_PREFIX = '🔷 自分(L-Pro): ';
+
+// ── L-Pro対応状況のトピック名マーカー（🔴未対応/✅対応済み。L-Pro の henshin が正）──
+// Telegram の未読バッジは各メンバーのクライアント状態で bot からは消せないため、
+// 「トピック一覧で対応状況が一目で分かる」表現としてトピック名の先頭マーカーを同期する。
+function markerName(marker: MarkerState, name: string | null, memberId: string): string {
+  const base = name && name.trim() !== '' ? name : `ID:${memberId}`;
+  return `${marker === 'done' ? '✅' : '🔴'} ${base}（${memberId}）`;
+}
 
 // Telegram 経由で送った返信は、次の読取で自分側吹き出しとして「逆流」してくる。そのまま配信すると
 // 二重表示になるため、送信本文（正規化）を控え、一致する自分側発言は配信を抑止する（既知化はする）。
@@ -177,8 +185,12 @@ async function processConversation(inbox: Inbox, conv: Conversation): Promise<nu
     toDeliver.push(m);
   }
   if (toDeliver.length > 0) {
-    // トピック名に会員IDを含めて同名顧客の取り違えを防ぐ。トピックは受信箱のグループへ作る
-    const threadId = await ensureTopic(key, `${conv.name}（${conv.memberId}）`, inbox.groupChatId);
+    // トピック名に会員IDを含めて同名顧客の取り違えを防ぐ。トピックは受信箱のグループへ作る。
+    // 新規作成時は現在の対応状況マーカー込みの名前にする（未読巡回経路=🔴 / 再同期経路=✅）
+    const initialMarker: MarkerState = conv.unread ? 'pending' : 'done';
+    const threadId = await ensureTopic(
+      key, markerName(initialMarker, conv.name, conv.memberId), inbox.groupChatId, initialMarker
+    );
     // 大量配信（新規顧客の履歴一括など）を1件1通で送ると Telegram のレート制限(429)を連発する
     // ため、まとまっている場合だけ複数件を1通に連結して通数を減らす。通常の新着は従来どおり1件1通。
     // 自分側発言はラベルを付けて顧客の発言と区別する
@@ -306,6 +318,60 @@ async function resyncOpenTopics(processedThisCycle: Set<string>): Promise<void> 
   }
 }
 
+// ── L-Pro対応状況 → トピック名マーカーの同期 ──
+// 巡回（未返信のみ検索）の結果から「一覧に居る=🔴未対応 / 不在=✅対応済み」を推定し、
+// 変化したトピックだけ名前を書き替える（editForumTopic はグループ管理APIなので、1サイクルの
+// 呼び出し数を絞りレート制限を守る。残りは次サイクルに持ち越し=数十秒遅れで追い付く）。
+// 対象は db.listMarkerCandidates が絞る（🔴表示中 or 直近活動あり。休眠トピックを掘り返さない）
+const MARKER_MAX_PER_CYCLE = 3;
+// ✅は連続不在サイクル数がこの値に達してから（一過性の一覧欠けで誤✅にしない。logic.ts 参照）
+const MARKER_DONE_AFTER_MISSES = 2;
+const markerAbsentStreak = new Map<string, number>();
+// 429 を受けたら retry_after の間マーカー同期ごと休む（巡回=配信は止めない）
+let markerPauseUntil = 0;
+// Telegram経由の返信が成功した時刻。巡回スナップショット（返信前に取得）より新しい返信があるキーは
+// 🔴への遷移を捨てる（返信直後の即✅を古いスナップショットが🔴へ戻すフラップの防止）
+const lastRepliedAt = new Map<string, number>();
+async function syncTopicMarkers(inbox: Inbox, unreadKeys: ReadonlySet<string>, snapshotAt: number): Promise<void> {
+  if (Date.now() < markerPauseUntil) return;
+  const since = Date.now() - cfg.resyncActiveWindowMs;
+  const prefix = `${inbox.id}:`;
+  // prefix でも絞る: 2受信箱に同一グループを誤設定しても、他受信箱の顧客を「不在=✅」と
+  // 誤判定しない（group_chat_id の絞りだけだと構造的に危険側へ壊れる）
+  const candidates = dbApi.listMarkerCandidates(inbox.groupChatId, since)
+    .filter((c) => c.key.startsWith(prefix));
+  const transitions = decideMarkerTransitions(candidates, unreadKeys, {
+    truncated: pollHitLimitFor(inbox.id),
+    max: MARKER_MAX_PER_CYCLE,
+    doneAfterMisses: MARKER_DONE_AFTER_MISSES,
+  }, markerAbsentStreak);
+  for (const t of transitions) {
+    if (shuttingDown) return;
+    // スナップショット取得後に返信済みのキーは、古い「未読」観測による🔴戻しをしない
+    if (t.desired === 'pending' && (lastRepliedAt.get(t.key) ?? 0) >= snapshotAt) continue;
+    const cust = dbApi.get(t.key);
+    if (!cust?.topic_thread_id || !cust.group_chat_id) continue;
+    const memberId = t.key.slice(prefix.length);
+    try {
+      await renameTopic(cust.group_chat_id, cust.topic_thread_id, markerName(t.desired, cust.name, memberId));
+      dbApi.setMarker(t.key, t.desired);
+      console.log(`対応状況マーカー ${t.desired === 'done' ? '✅' : '🔴'} [${inbox.name}][${memberId}]`);
+    } catch (e) {
+      if (isThreadNotFoundError(e)) { dbApi.clearTopic(t.key); continue; }
+      const pause = retryAfterMs(e);
+      if (pause !== null) {
+        // レート制限: retry_after の間はマーカー同期だけ休止（巡回と配信は続行）。差分は残るので後で追い付く
+        markerPauseUntil = Date.now() + pause;
+        console.warn(`マーカー同期を一時停止 [${inbox.name}] (${Math.round(pause / 1000)}秒・レート制限)`);
+        return;
+      }
+      // 恒久エラー1件で後続を飢餓させない（この件は次サイクル以降も候補に残り再試行される）
+      console.warn(`マーカー更新失敗 [${inbox.name}][${memberId}]:`, String(e).slice(0, 150));
+      continue;
+    }
+  }
+}
+
 async function pollOnce(): Promise<void> {
   let playwrightSuspect = false;
   let cycleConvFailures = 0;
@@ -314,8 +380,10 @@ async function pollOnce(): Promise<void> {
   for (const inbox of inboxes) {
     if (shuttingDown) return;
     let convs: Conversation[];
+    let fetchedAt = 0;
     try {
       convs = await runExclusive(() => pollConversations(inbox));
+      fetchedAt = Date.now();
     } catch (e) {
       console.error(`一覧取得失敗 [${inbox.name}]:`, String(e).slice(0, 200));
       cycleConvFailures++;
@@ -357,6 +425,14 @@ async function pollOnce(): Promise<void> {
       }
     } else {
       zeroExtractStreak.set(inbox.id, 0);
+    }
+    // L-Pro の対応状況をトピック名の🔴/✅へ同期（一覧取得に成功したサイクルだけ推定が有効）
+    if (!shuttingDown) {
+      await syncTopicMarkers(
+        inbox,
+        new Set(convs.filter((c) => c.unread).map((c) => keyOf(inbox, c.memberId))),
+        fetchedAt
+      );
     }
   }
 
@@ -497,6 +573,16 @@ async function main(): Promise<void> {
         // オペレーターの返信＝実活動。再同期の対象に含める（PC直返信の反映にも効く）
         dbApi.touchActivity(key);
         clearResyncBackoff(key);
+        // 返信送信成功＝L-Pro は返信済みへ遷移した。次の巡回を待たずトピック名を✅にする
+        // （失敗しても巡回のマーカー同期が数十秒後に追い付くのでベストエフォート）。
+        // 時刻を控え、返信前に取得された巡回スナップショットによる🔴戻しを防ぐ
+        lastRepliedAt.set(key, Date.now());
+        const c2 = dbApi.get(key);
+        if (c2?.topic_thread_id && c2.group_chat_id && c2.tg_marker !== 'done') {
+          void renameTopic(c2.group_chat_id, c2.topic_thread_id, markerName('done', c2.name ?? name, memberId))
+            .then(() => dbApi.setMarker(key, 'done'))
+            .catch((e) => console.warn('返信後のマーカー更新失敗（巡回で再同期されます）:', String(e).slice(0, 120)));
+        }
         // 会話本文はログに残さない（PM2 のログは平文でディスクに蓄積されるため）
         console.log(`→ Lpro送信 [${inbox.name}][${name}] (${text.length}字)`);
         stats.sent++;

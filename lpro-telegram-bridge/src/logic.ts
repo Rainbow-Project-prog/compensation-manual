@@ -71,6 +71,47 @@ export function packDeliveryChunks<T extends { hash: string }>(
   return chunks;
 }
 
+// ── L-Pro対応状況 → Telegram トピック名マーカー（🔴未対応/✅対応済み）の遷移判定 ──
+// L-Pro の henshin（未返信/返信済み）が正。ブリッジの巡回は「未返信のみ」検索なので、
+//   一覧に居る  = 未返信  → 'pending'（🔴）
+//   一覧に不在  = 返信済み（または退会）→ 'done'（✅）
+// と推定できる。誤✅（対応済みに見えて実は未対応）が最悪方向の誤りなので、✅側は保守的に:
+//  - 一覧が表示上限で打ち切られている場合は保留（不在=「表示圏外の未返信」があり得る）。
+//    打ち切りサイクルは不在ストリークにも数えない。
+//  - 一過性の描画失敗・stale文書で一覧が欠けても1サイクルで✅にしない: doneAfterMisses
+//    サイクル連続で不在のときだけ✅へ遷移する（不在ストリークは呼び出し側が保持する absentStreak
+//    に記録。present で即リセット=🔴側は即応）。
+// 遷移（現在のマーカーと望ましい状態が異なる）だけを、編集APIを叩く上限 max 件まで返す。
+// max 到達後も候補全体のストリーク更新は続ける（持ち越したサイクルでも不在カウントを失わない）。
+export type MarkerState = 'pending' | 'done';
+export function decideMarkerTransitions(
+  candidates: Array<{ key: string; marker: string | null }>,
+  unreadKeys: ReadonlySet<string>,
+  opts: { truncated: boolean; max: number; doneAfterMisses?: number },
+  absentStreak: Map<string, number>
+): Array<{ key: string; desired: MarkerState }> {
+  const need = Math.max(1, opts.doneAfterMisses ?? 2);
+  const out: Array<{ key: string; desired: MarkerState }> = [];
+  for (const c of candidates) {
+    const present = unreadKeys.has(c.key);
+    let misses = 0;
+    if (present) {
+      absentStreak.delete(c.key);
+    } else if (!opts.truncated) {
+      misses = (absentStreak.get(c.key) ?? 0) + 1;
+      absentStreak.set(c.key, misses);
+    } else {
+      misses = absentStreak.get(c.key) ?? 0;
+    }
+    if (out.length >= opts.max) continue; // 上限到達後もストリーク更新だけは続ける
+    const desired: MarkerState = present ? 'pending' : 'done';
+    if (desired === 'done' && (opts.truncated || misses < need)) continue;
+    if (c.marker === desired) continue;
+    out.push({ key: c.key, desired });
+  }
+  return out;
+}
+
 // ── フィンガープリント生成（純関数。Lpro/Telegram 非依存なのでここで単体テストする）──
 import { createHash } from 'node:crypto';
 

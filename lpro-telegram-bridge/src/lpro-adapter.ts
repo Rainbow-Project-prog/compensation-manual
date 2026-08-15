@@ -2,7 +2,7 @@ import { chromium, type BrowserContext, type Page, type Frame, type Locator } fr
 import { execFile } from 'node:child_process';
 import { resolve } from 'node:path';
 import { toConvMessages, type ScanMsg, type ConvMsg } from './logic.js';
-import { cfg, SELECTORS, SEND_ACCEPT_RE, DISPLAY_LIMIT, httpCredentials, inboxes, type Inbox } from './config.js';
+import { cfg, SELECTORS, SEND_ACCEPT_RE, DISPLAY_LIMIT, DISPLAY_LIMIT_FALLBACK, httpCredentials, inboxes, type Inbox } from './config.js';
 
 /** conv.memberId は Lpro の会員ID（受信箱に依らず顧客不変）。DBキーは inbox 込みで index.ts が合成。
  * inbound は巡回時に一括抽出済みの顧客発言（共有画面の割り込み競合を避けるため poll 内で確定させる）。
@@ -205,6 +205,9 @@ type RowScan = { key: string; name: string; status: string; scans: MsgScan[] };
 const lastLoggedCounts = new Map<string, string>();
 // 受信箱ごとの「現在サイクルで表示上限に達しているか」。解消すれば false に戻る
 const overLimitByInbox = new Map<string, boolean>();
+// 受信箱ごとの「直近の applySearch で表示数500件の指定が効いたか」。効いていなければ
+// サーバー既定の100件が実効上限なので、打ち切り判定をそちらに合わせる（無音の見落とし防止）
+const limitOkByInbox = new Map<string, boolean>();
 
 /**
  * 検索フォームを明示的に送信して chatframe を目的の状態にする。
@@ -228,8 +231,13 @@ async function applySearch(
     // 検索欄が実際に出現するまで待つ（毎ループでフレームを取り直す）。
     const menu = await waitMenuReady(inbox, 12_000);
     await menu.locator(SELECTORS.memberIdFilter).first().fill(opts.memberId, { timeout: 8_000 });
-    // 表示数を広げる（未返信100超の取りこぼし防止）。無ければ無視
-    await menu.locator(SELECTORS.limitLarge).first().check({ timeout: 4_000 }).catch(() => {});
+    // 表示数を広げる（未返信100超の取りこぼし防止）。失敗は無視するが「500件が効いたか」は記録する:
+    // セレクタ切れで既定100件に落ちると rows.length が500に届かず打ち切り検知（overLimit）が
+    // 無音で無効化されるため、失敗時は実効上限=100件として判定する（マーカー同期の誤✅防止の生命線）
+    const limitOk = await menu.locator(SELECTORS.limitLarge).first().check({ timeout: 4_000 })
+      .then(() => true)
+      .catch(() => false);
+    limitOkByInbox.set(inbox.id, limitOk);
     const btn = opts.unreadOnly ? SELECTORS.searchUnreadButton : SELECTORS.searchAllButton;
 
     // ★検索フォーム submit は chatframe を再読込する（POST, target=chatframe）。
@@ -242,7 +250,13 @@ async function applySearch(
       )
       .catch(() => null);
     await menu.locator(btn).first().click({ timeout: 8_000 });
-    await respP; // 応答到達（=新文書コミット）まで待つ
+    // 応答到達（=新文書コミット）まで待つ。★応答を確認できないまま進むと旧文書（例: 直前の返信で
+    // 会員ID 1件に絞られた一覧）を「正常な検索結果」として読んでしまい、巡回の見落としや
+    // マーカー同期の誤✅（一覧に不在=対応済みの誤判定）につながるため、確認できなければ中断する
+    // （attempt は呼び出し側で再ナビゲート付きの再試行が1回かかる）
+    if ((await respP) === null) {
+      throw new Error(`${inbox.name}: 検索POSTの応答を確認できません（旧い一覧を読む恐れがあるため中断）`);
+    }
 
     // 応答後に chatframe を取り直し、描画の落ち着きを短く待つ
     const deadline = Date.now() + 10_000;
@@ -332,11 +346,12 @@ export async function pollConversations(inbox: Inbox): Promise<Conversation[]> {
   const f = await applySearch(inbox, { memberId: '', unreadOnly: cfg.onlyUnread });
   // 画面外の行の会話履歴を描画させてから抽出する（未描画行を「0件」と誤認しないため）
   await renderAllRows(inbox, f);
-  const rows: RowScan[] = await f.evaluate(
+  const scan: { total: number; rows: RowScan[] } = await f.evaluate(
     (S) => {
+      const all = document.querySelectorAll(S.conversationItem);
       const out: Array<{ key: string; name: string; status: string;
         scans: Array<{ inbound: boolean; text: string; dt: string; hasImage: boolean }> }> = [];
-      for (const row of document.querySelectorAll(S.conversationItem)) {
+      for (const row of all) {
         const idEl = row.querySelector(S.memberIdText);
         const key = (idEl?.textContent ?? '').trim();
         if (!key) continue; // 一括返信行・会員ID欠落行はスキップ（誤爆防止）
@@ -357,7 +372,7 @@ export async function pollConversations(inbox: Inbox): Promise<Conversation[]> {
         }
         out.push({ key, name, status, scans });
       }
-      return out;
+      return { total: all.length, rows: out };
     },
     {
       conversationItem: SELECTORS.conversationItem,
@@ -370,11 +385,22 @@ export async function pollConversations(inbox: Inbox): Promise<Conversation[]> {
       msgDatetime: SELECTORS.msgDatetime,
     }
   );
-  if (rows.length === 0) {
-    warnOnce(`empty-list-${inbox.id}`, `${inbox.name}: 顧客行が0件です。conversationItem セレクタと表示フィルタを確認してください。`);
+  const rows = scan.rows;
+  // ★偽の「未返信ゼロ」を配信・マーカー同期に流さないためのガード（2026-08-15 レビュー反映）:
+  //  - 行が1つも無い: chatframe には一括返信行(rowid=0)が常在するので、total=0 は「未返信ゼロ」では
+  //    なく文書が描画されていない（またはセレクタ切れ）。正常リターンすると全トピックが誤✅化する
+  //  - 行はあるのに会員IDが1件も読めない: memberIdText セレクタ切れの疑い（一括返信行しか無い
+  //    total=1 は正当な空一覧なので除外）
+  if (scan.total === 0) {
+    throw new Error(`${inbox.name}: 一覧に行が1件もありません（一括返信行も無い＝文書未描画/セレクタ切れの疑い）`);
   }
-  // 表示上限に達したか（現在サイクルの状態）。解消したら false に戻し、再超過で再警告できるようにする
-  overLimitByInbox.set(inbox.id, rows.length >= DISPLAY_LIMIT);
+  if (scan.total > 1 && rows.length === 0) {
+    throw new Error(`${inbox.name}: 顧客行が ${scan.total - 1} 行あるのに会員IDを1件も読めません（member_id セレクタ切れの疑い）`);
+  }
+  // 表示上限に達したか（現在サイクルの状態）。解消したら false に戻し、再超過で再警告できるようにする。
+  // 500件指定が効かなかったサイクルはサーバー既定の100件を実効上限として判定する
+  const effLimit = limitOkByInbox.get(inbox.id) === false ? DISPLAY_LIMIT_FALLBACK : DISPLAY_LIMIT;
+  overLimitByInbox.set(inbox.id, rows.length >= effLimit);
   const out = rows.map((r) => {
     // 未読判定は安全側: 「未返信」を含む、または「返信済」を含まない未知の状態は未読扱い
     const unread =
@@ -403,6 +429,12 @@ export async function pollConversations(inbox: Inbox): Promise<Conversation[]> {
 export function pollHitLimit(): boolean {
   for (const v of overLimitByInbox.values()) if (v) return true;
   return false;
+}
+
+/** 指定受信箱が現在サイクルで表示上限に達しているか。打ち切り中は「一覧に不在＝返信済み」の
+ * 推定が信用できない（表示圏外の未返信があり得る）ため、ステータスマーカー同期が✅側を保留する判定に使う */
+export function pollHitLimitFor(inboxId: string): boolean {
+  return overLimitByInbox.get(inboxId) ?? false;
 }
 
 /**

@@ -180,3 +180,76 @@ test('本文も画像も無い空吹き出しは捨てる', () => {
   const out = toConvMessages('chat', '123', [scan(true, '', '07/04 22:04', false)]);
   assert.deepEqual(out, []);
 });
+
+// --- 対応状況マーカーの遷移判定（L-Pro henshin → トピック名 🔴/✅）---
+
+import { decideMarkerTransitions } from '../src/logic.js';
+
+const cand = (key: string, marker: string | null) => ({ key, marker });
+const noTrunc = { truncated: false, max: 10 };
+const streak = () => new Map<string, number>();
+
+test('未返信一覧に居る顧客は pending(🔴) へ即遷移', () => {
+  const t = decideMarkerTransitions(
+    [cand('talk:1', 'done'), cand('talk:2', null)], new Set(['talk:1', 'talk:2']), noTrunc, streak());
+  assert.deepEqual(t, [
+    { key: 'talk:1', desired: 'pending' },
+    { key: 'talk:2', desired: 'pending' },
+  ]);
+});
+
+test('不在→done(✅) は doneAfterMisses サイクル連続不在で初めて遷移（1回目は保留）', () => {
+  const s = streak();
+  const c = [cand('talk:1', 'pending')];
+  assert.deepEqual(decideMarkerTransitions(c, new Set(), noTrunc, s), []); // 1回目: 保留
+  assert.deepEqual(decideMarkerTransitions(c, new Set(), noTrunc, s), [{ key: 'talk:1', desired: 'done' }]); // 2回目
+});
+
+test('不在ストリークは present で即リセット（一過性の一覧欠けで✅にしない）', () => {
+  const s = streak();
+  const c = [cand('talk:1', 'pending')];
+  decideMarkerTransitions(c, new Set(), noTrunc, s); // 不在1回
+  decideMarkerTransitions(c, new Set(['talk:1']), noTrunc, s); // 再出現 → リセット
+  assert.deepEqual(decideMarkerTransitions(c, new Set(), noTrunc, s), []); // 不在1回目からやり直し
+});
+
+test('doneAfterMisses=1 なら不在1回で✅', () => {
+  const t = decideMarkerTransitions(
+    [cand('talk:1', 'pending'), cand('talk:2', null)], new Set(),
+    { truncated: false, max: 10, doneAfterMisses: 1 }, streak());
+  assert.deepEqual(t, [
+    { key: 'talk:1', desired: 'done' },
+    { key: 'talk:2', desired: 'done' },
+  ]);
+});
+
+test('既に望む状態なら遷移なし（editForumTopic を呼ばせない）', () => {
+  const s = streak();
+  const c = [cand('talk:1', 'pending'), cand('talk:2', 'done')];
+  const t1 = decideMarkerTransitions(c, new Set(['talk:1']), { truncated: false, max: 10, doneAfterMisses: 1 }, s);
+  assert.deepEqual(t1, []);
+});
+
+test('表示上限打ち切り中は「不在=✅」を保留し、不在ストリークにも数えない', () => {
+  const s = streak();
+  const c = [cand('talk:1', 'pending'), cand('talk:2', 'done')];
+  const t1 = decideMarkerTransitions(c, new Set(['talk:2']), { truncated: true, max: 10, doneAfterMisses: 1 }, s);
+  assert.deepEqual(t1, [{ key: 'talk:2', desired: 'pending' }]); // 🔴側は即応
+  assert.equal(s.get('talk:1') ?? 0, 0); // 打ち切りサイクルは不在にカウントしない
+});
+
+test('max 件で打ち止め（残りは次サイクルへ持ち越し）だが、ストリーク更新は全候補分続く', () => {
+  const s = streak();
+  const c = [cand('talk:1', null), cand('talk:2', null), cand('talk:3', null)];
+  const t = decideMarkerTransitions(c, new Set(), { truncated: false, max: 2, doneAfterMisses: 1 }, s);
+  assert.deepEqual(t.map((x) => x.key), ['talk:1', 'talk:2']);
+  assert.equal(s.get('talk:3'), 1); // 持ち越し分も不在カウントは進んでいる
+});
+
+test('max は「実際の遷移数」で数える（無遷移の候補はカウントしない）', () => {
+  const t = decideMarkerTransitions(
+    [cand('talk:1', 'done'), cand('talk:2', 'done'), cand('talk:3', null)],
+    new Set(),
+    { truncated: false, max: 1, doneAfterMisses: 1 }, streak());
+  assert.deepEqual(t, [{ key: 'talk:3', desired: 'done' }]);
+});

@@ -51,8 +51,15 @@ async function withRetry<T>(
 }
 
 /** 顧客ごとのトピックを確保（無ければ作成）。配信直前にだけ呼ぶ（空トピックの量産防止）。
- * トピックは受信箱ごとのグループ（groupChatId）に作る。 */
-export async function ensureTopic(customerKey: string, name: string, groupChatId: number): Promise<number> {
+ * トピックは受信箱ごとのグループ（groupChatId）に作る。
+ * initialMarker を渡すと、新規作成時にトピック名へ含めたステータスマーカーの現在値を DB に記録する
+ * （name 側には呼び出し元がマーカー込みの表示名を渡す）。既存トピックには何もしない。 */
+export async function ensureTopic(
+  customerKey: string,
+  name: string,
+  groupChatId: number,
+  initialMarker?: 'pending' | 'done'
+): Promise<number> {
   const existing = dbApi.get(customerKey);
   if (existing?.topic_thread_id) return existing.topic_thread_id;
   let topic;
@@ -77,7 +84,31 @@ export async function ensureTopic(customerKey: string, name: string, groupChatId
   // 作成→DB永続化の間のクラッシュで生まれる孤児トピックを診断できるよう、必ずログに残す
   console.log(`トピック作成: group=${groupChatId} thread=${topic.message_thread_id} key=${customerKey}`);
   dbApi.setTopic(customerKey, topic.message_thread_id, groupChatId);
+  if (initialMarker) dbApi.setMarker(customerKey, initialMarker);
   return topic.message_thread_id;
+}
+
+/** トピック名を変更する（ステータスマーカー 🔴/✅ の切替用）。
+ * 同名への変更は Telegram が 400 TOPIC_NOT_MODIFIED を返すが、それは「既に望む状態」なので成功扱い。
+ * ★リトライしない★: マーカー同期は DB との差分が残る限り次サイクルが再試行するので、ここで
+ * retry_after を待つと（グループ管理APIの 429 は数十秒があり得る）巡回＝配信そのものを塞いでしまう。
+ * 429 は呼び出し側が retryAfterMs で待機時間を取り、マーカー同期だけを一時停止する。 */
+export async function renameTopic(groupChatId: number, threadId: number, name: string): Promise<void> {
+  try {
+    await bot.api.editForumTopic(groupChatId, threadId, { name: name.slice(0, 128) });
+  } catch (e) {
+    if (e instanceof GrammyError && e.error_code === 400 && /TOPIC_NOT_MODIFIED/i.test(e.description)) return;
+    throw e;
+  }
+}
+
+/** 429（レート制限）なら推奨待機ミリ秒を返す。それ以外は null。
+ * retry_after 欠落時は保守的に 30 秒（マーカー同期の一時停止判定用） */
+export function retryAfterMs(e: unknown): number | null {
+  if (e instanceof GrammyError && e.error_code === 429) {
+    return (e.parameters?.retry_after ?? 30) * 1000;
+  }
+  return null;
 }
 
 /** 顧客の発言を該当トピックへ（4096字制限があるため分割送信）。

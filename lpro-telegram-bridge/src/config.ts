@@ -182,6 +182,8 @@ export const SELECTORS = {
 
 // 表示上限（limitLarge=500件）。巡回でこの件数に達したら「打ち切りの可能性」を警告する
 export const DISPLAY_LIMIT = 500;
+// limitLarge の指定に失敗した場合のサーバー既定表示件数（打ち切り判定をこちらへ落とす）
+export const DISPLAY_LIMIT_FALLBACK = 100;
 
 // 返信送信の受理シグナル（2026-07-18 診断で判明）。送信ボタンは chatframe への form POST ではなく、
 // AJAX で /manage/json/<名前>_send（トーク=line_send / チャット=chat_send）へ POST する。この応答が
