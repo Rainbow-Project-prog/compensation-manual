@@ -7,14 +7,13 @@
     "node": ">=20.6"
   },
   "scripts": {
-    "prestart": "tsx src/doctor.ts",
     "start": "tsx src/index.ts",
     "login": "tsx src/login.ts",
     "chatid": "tsx src/chatid.ts",
     "dump": "tsx src/dump.ts",
     "doctor": "tsx src/doctor.ts",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test test/logic.test.ts"
+    "test": "node --import tsx --test test/logic.test.ts test/instances.test.ts"
   },
   "dependencies": {
     "better-sqlite3": "^12.4.1",

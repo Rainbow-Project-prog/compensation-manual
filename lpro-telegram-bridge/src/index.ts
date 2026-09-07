@@ -4,8 +4,10 @@ import { runExclusive, drainQueue } from './queue.js';
 import { decideDeliveryBySeen, packDeliveryChunks, decideMarkerTransitions, type MarkerState } from './logic.js';
 import { runBackup } from './backup.js';
 import { runDoctor, printResult } from './preflight.js';
+import { writeLock, touchLock, removeLock } from './instances.js';
 import {
-  initBrowser, closeBrowser, isBrowserGoneError, pageGone, ensureLoggedIn, setLoginNotifier,
+  initBrowser, closeBrowser, recycleBrowser, browserGeneration, isLoginWaiting, isBrowserGoneError, pageGone,
+  ensureLoggedIn, setLoginNotifier,
   pollConversations, readInbound, sendReply, pollHitLimit, pollHitLimitFor, listAllMemberIds, type Conversation,
 } from './lpro-adapter.js';
 import {
@@ -127,8 +129,9 @@ async function bootstrapAll(): Promise<void> {
   }
 }
 
-// 日次ハートビートで報告する稼働カウンタ（前回ハートビート以降の累計）
-const stats = { polls: 0, delivered: 0, sent: 0 };
+// 日次ハートビートで報告する稼働カウンタ（前回ハートビート以降の累計）。
+// listFail/convFail は自己修復する一過性エラーの回数＝ブラウザ・Lpro の劣化傾向を運用側から見るための指標
+const stats = { polls: 0, delivered: 0, sent: 0, listFail: 0, convFail: 0 };
 
 /**
  * 1会話分の取り込み。★必ず runExclusive(() => processConversation(...)) で呼ぶこと★
@@ -386,6 +389,7 @@ async function pollOnce(): Promise<void> {
       fetchedAt = Date.now();
     } catch (e) {
       console.error(`一覧取得失敗 [${inbox.name}]:`, String(e).slice(0, 200));
+      stats.listFail++;
       cycleConvFailures++;
       if (!isTelegramError(e)) playwrightSuspect = true;
       continue; // この受信箱は今サイクル諦め、他の受信箱は続行する
@@ -406,6 +410,7 @@ async function pollOnce(): Promise<void> {
         extracted += await runExclusive(() => processConversation(inbox, conv));
       } catch (e) {
         console.error(`会話処理失敗 [${inbox.name}][${conv.name}]:`, String(e).slice(0, 300));
+        stats.convFail++;
         convFailures++;
         // トピック作成の 400 はセットアップ不備の可能性が高く放置すると全顧客が無音未配信 → 即時自己申告
         if (String(e).includes('トピック作成に失敗') && Date.now() - lastTopicFailNotifyAt > 3_600_000) {
@@ -472,7 +477,10 @@ function msUntilNextTick(hour: number): number {
   return next.getTime() - now.getTime();
 }
 
+let recycling = false;
 async function dailyTick(): Promise<void> {
+  // 先に翌日のティックを予約する（下のブラウザ再起動やログイン待ちで何時間塞がっても、翌朝の💓が飛ばない）
+  scheduleDailyTick();
   let backupNote: string;
   try {
     backupNote = runBackup(cfg.backupRetain)
@@ -484,32 +492,66 @@ async function dailyTick(): Promise<void> {
   }
   await notifyOps(
     `💓 定時ハートビート: ブリッジ稼働中（前回から: 巡回 ${stats.polls} 回 / Telegram配信 ${stats.delivered} 通 / ` +
-    `Lpro送信 ${stats.sent} 件 / ${backupNote}）。` +
+    `Lpro送信 ${stats.sent} 件 / 一覧取得失敗 ${stats.listFail} 回 / 会話処理失敗 ${stats.convFail} 回 / ${backupNote}）。` +
     'この通知が毎日この時刻に届かなくなったら、ブリッジが止まっています。PC と PM2 を確認してください。'
   );
   stats.polls = 0;
   stats.delivered = 0;
   stats.sent = 0;
+  stats.listFail = 0;
+  stats.convFail = 0;
+  // ハートビート（生存契約）を送ってからブラウザを開き直す。順序が逆だと、開き直しがログイン待ちに
+  // 入ったとき💓が届かず「停止」と誤認される。排他区間の待ちでこの関数を塞がないよう fire-and-forget
+  // （巡回・返信とは runExclusive で直列化される）。ログイン待ち中は開き直さない（待ちの後ろに並ぶだけで無意味）
+  if (cfg.dailyBrowserRecycle && !shuttingDown && !recycling && !isLoginWaiting()) {
+    recycling = true;
+    console.log('ブラウザを定期再起動します（長時間稼働の描画遅延をリセット）…');
+    void runExclusive(() => recycleBrowser(() => shuttingDown))
+      .then(() => console.log('ブラウザの定期再起動が完了しました'))
+      // 致命ではない: 次の巡回が isBrowserGoneError / pageGone 経路で initBrowser を再試行する
+      .catch((e) => console.error('ブラウザの定期再起動に失敗（次の巡回で復旧を試みます）:', String(e).slice(0, 200)))
+      .finally(() => { recycling = false; });
+  } else if (cfg.dailyBrowserRecycle && isLoginWaiting()) {
+    console.log('ログイン待ち中のためブラウザの定期再起動を見送ります');
+  }
 }
 
 function scheduleDailyTick(): void {
   if (cfg.dailyTickHour < 0 || shuttingDown) return;
   // 毎回「次の該当時刻」を取り直す1発タイマーの連鎖にする（setInterval だと時刻合わせできず、
-  // スリープ復帰などで発火時刻がずれても自己補正されない）
+  // スリープ復帰などで発火時刻がずれても自己補正されない）。タイマーが僅かに早く発火して「次」が
+  // 数十ミリ秒後になる二重発火を防ぐため、1分未満なら翌日に送る
+  let ms = msUntilNextTick(cfg.dailyTickHour);
+  if (ms < 60_000) ms += 24 * 3_600_000;
   setTimeout(() => {
-    void dailyTick()
-      .catch((e) => console.error('日次ティック失敗:', e))
-      .finally(scheduleDailyTick);
-  }, msUntilNextTick(cfg.dailyTickHour));
+    void dailyTick().catch((e) => console.error('日次ティック失敗:', e));
+  }, ms);
 }
 
 async function main(): Promise<void> {
   // PM2 経由は npm の prestart(doctor) を通らないため、ここでも必ずチェックする
   const pre = runDoctor();
+  printResult(pre);
   if (pre.problems.length > 0) {
-    printResult(pre);
+    // 起動前チェックで止まるときも無音にしない（<30秒で死ぬと PM2 の min_uptime を割り、max_restarts 到達で
+    // 永久停止＝完全無音死になる）。bot.api は長ポーリング無しで送れる
+    await Promise.race([
+      notifyOps(`⚠️ 起動前チェックに失敗したため起動を中止しました: ${pre.problems.join(' / ').slice(0, 800)}`),
+      new Promise((r) => setTimeout(r, 8000)),
+    ]).catch(() => {});
     process.exit(1);
   }
+  if (pre.warnings.length > 0) {
+    // 既定案件は他案件との競合があっても稼働を続けるが、放置されないよう運用グループに知らせる
+    await Promise.race([
+      notifyOps(`⚠️ 起動前チェックの警告: ${pre.warnings.join(' / ').slice(0, 800)}`),
+      new Promise((r) => setTimeout(r, 8000)),
+    ]).catch(() => {});
+  }
+  // 生存マーカー（他案件の preflight が「この案件はいま動いている」と判定するための bridge.lock）。
+  // 巡回ループの状態（ログイン待ち等）に依らず一定間隔で touch する。終了時に削除
+  writeLock(cfg.dataDir);
+  setInterval(() => touchLock(cfg.dataDir), 30_000).unref();
   console.log('監視対象の受信箱: ' + inboxes.map((i) => `${i.name}(group ${i.groupChatId})`).join(' / '));
 
   // 各受信箱の GROUP_CHAT_ID 変更検知。旧グループ由来のスレッドIDは新グループの別トピックと
@@ -536,9 +578,11 @@ async function main(): Promise<void> {
   // ログイン失効／復旧を運用グループへ通知する。initBrowser のログイン確認は startBot より前に
   // 走るが、notifyOps は bot.api 経由なので bot 長ポーリング未起動でも送れる（無音クラッシュループの穴を塞ぐ）。
   // 会話本文・顧客名は載せない（notifyOps の規約どおり）。
-  setLoginNotifier((e) => {
+  setLoginNotifier((e, detail) => {
     if (e === 'waiting') {
-      void notifyOps('⚠️ Lpro に未ログインです。ブリッジは受信・返信を止めて手動ログイン待機中です。表示中のブラウザでログイン（2FA含む）してください。');
+      void notifyOps('⚠️ Lpro に未ログインです。ブリッジは受信・返信を止めて手動ログイン待機中です。表示中のブラウザ（赤いバナー付き）でログイン（2FA含む）してください。');
+    } else if (e === 'wrong-site') {
+      void notifyOps(`🚫 Lpro に別のアカウントでログインされていたためログアウトしました（${detail ?? ''}）。この案件のアカウントで、表示中のブラウザからログインし直してください。受信・返信は止めています。`);
     } else {
       void notifyOps('✅ Lpro へのログインを確認しました。監視を再開します。');
     }
@@ -645,13 +689,20 @@ async function main(): Promise<void> {
         await notifyOps('⚠️ 巡回が10回連続で失敗しています。ブリッジのログを確認してください');
       }
       if (!shuttingDown) {
+        // 復旧の要否は排他区間の中で判定する: エラー観測時点で日次のブラウザ再起動（recycleBrowser）が
+        // 進行中だと page が一時的に null（pageGone=true）に見え、排他区間の外で判定すると再起動直後の
+        // 新しいブラウザをもう一度閉じて開き直してしまう（二重再起動）。世代が進んでいれば既に開き直された
+        const genAtError = browserGeneration();
         try {
-          if (isBrowserGoneError(e) || pageGone()) {
-            console.log('ブラウザを再起動します…');
-            await runExclusive(() => initBrowser());
-          } else if (!isTelegramError(e)) {
-            await runExclusive(() => ensureLoggedIn(inboxes[0]));
-          }
+          await runExclusive(async () => {
+            if (browserGeneration() !== genAtError) return; // 別経路で開き直し済み
+            if (isBrowserGoneError(e) || pageGone()) {
+              console.log('ブラウザを再起動します…');
+              await initBrowser();
+            } else if (!isTelegramError(e)) {
+              await ensureLoggedIn(inboxes[0]);
+            }
+          });
         } catch (e2) {
           console.error('復旧失敗（次の巡回で再試行）:', e2);
         }
@@ -674,6 +725,7 @@ async function shutdown(reason: string, code = 0): Promise<void> {
   await Promise.race([drainQueue(), new Promise((r) => setTimeout(r, 5000))]);
   try { await closeBrowser(); } catch (e) { console.error('ブラウザ終了エラー:', e); }
   try { closeDb(); } catch (e) { console.error('DB終了エラー:', e); }
+  removeLock(cfg.dataDir);
   console.log('終了しました。');
   process.exit(code);
 }
@@ -705,7 +757,7 @@ process.on('uncaughtException', (e) => {
   void Promise.race([
     (async () => { await drainQueue(); try { await closeBrowser(); } catch { /* already gone */ } })(),
     new Promise((r) => setTimeout(r, 8000)),
-  ]).finally(() => process.exit(1));
+  ]).finally(() => { removeLock(cfg.dataDir); process.exit(1); });
 });
 
 // 起動・初期化での致命エラーも無音にしない（ログイン失効は ensureLoggedIn が通知するが、
@@ -713,6 +765,7 @@ process.on('uncaughtException', (e) => {
 // これらは <30秒で死ぬと min_uptime を割り、PM2 が max_restarts 到達で永久停止＝完全無音死しうる。
 main().catch(async (e) => {
   console.error(e);
+  removeLock(cfg.dataDir);
   await Promise.race([
     notifyOps('⚠️ ブリッジが起動・初期化に失敗しました（再起動を繰り返している可能性があります）。表示中のブラウザとログを確認してください。'),
     new Promise((r) => setTimeout(r, 8000)),

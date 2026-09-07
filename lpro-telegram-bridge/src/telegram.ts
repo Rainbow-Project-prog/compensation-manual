@@ -136,8 +136,10 @@ export async function pushInbound(groupChatId: number, threadId: number, text: s
  * 粘る（実際に素の1発送信は 2026-07 の実測で取りこぼしていた）。それでも失敗した場合は
  * グループ単位で握りつぶす: 片方のグループ障害で、もう片方への通知まで道連れにしない。 */
 export async function notifyOps(text: string): Promise<void> {
+  // 複数案件運用で「どの案件の通知か」を一目で分かるようにする（INSTANCE_LABEL 未設定なら従来どおり）
+  const tagged = cfg.instanceLabel ? `[${cfg.instanceLabel}] ${text}` : text;
   for (const inbox of inboxes) {
-    await withRetry('notifyOps', () => bot.api.sendMessage(inbox.groupChatId, text))
+    await withRetry('notifyOps', () => bot.api.sendMessage(inbox.groupChatId, tagged))
       .catch((e) => console.error('運用通知の送信失敗:', String(e).slice(0, 120)));
   }
 }

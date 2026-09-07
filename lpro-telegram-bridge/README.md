@@ -15,6 +15,9 @@ lpro-telegram-bridge/
 ├─ .env.example          ← .env にコピーして記入
 ├─ ecosystem.config.cjs  ← PM2 常時起動設定（Windows対応）
 ├─ src/
+│  ├─ env.ts             ← 案件（インスタンス）の解決と .env 読み込み（最初に import される）
+│  ├─ paths.ts           ← 案件のデータ配置規則（純関数）
+│  ├─ instances.ts       ← 複数案件の列挙・案件間の設定競合の検出
 │  ├─ config.ts          ← ★Lpro依存の SELECTORS はここだけ★
 │  ├─ lpro-adapter.ts    ← ★Lpro自動操作（依存はここに隔離）★
 │  ├─ telegram.ts        ← トピック管理・送受信（grammY）
@@ -27,7 +30,8 @@ lpro-telegram-bridge/
 │  ├─ login.ts           ← 初回ログイン（headedブラウザ）
 │  └─ chatid.ts          ← グループの chat_id 取得
 └─ test/
-   └─ logic.test.ts      ← 配信判定の単体テスト
+   ├─ logic.test.ts      ← 配信判定の単体テスト
+   └─ instances.test.ts  ← 案件間の競合ルール・データ配置規則の単体テスト
 ```
 
 ## セットアップ（家の常時起動PCで実行）
@@ -64,14 +68,14 @@ npm run doctor
 npm start
 ```
 
-> `npm start` 実行時は自動で `npm run doctor`（事前チェック）が走り、`.env` 未記入や
-> SELECTORS の `'TODO'` 残りがあると起動前に止まる。PM2 起動時も index.ts が同じチェックを行う。
+> 起動時は index.ts が `npm run doctor` と同じ事前チェックを行い、`.env` 未記入や
+> SELECTORS の `'TODO'` 残り、他案件との設定競合があると起動前に止まる（PM2 起動時も同じ）。
 
 常時起動（任意）:
 
 ```bash
 npm i -g pm2
-pm2 start ecosystem.config.cjs   # 自動再起動つき（restart_delay 5s / max_restarts 10）
+pm2 start ecosystem.config.cjs --only lpro-bridge   # 既定案件だけ起動（引数なしは全案件を再起動するので使わない）
 pm2 save
 # OS起動時の自動立ち上げ（Windows は `pm2 startup` 非対応。RUNBOOK 参照）:
 #   npm i -g pm2-windows-startup && pm2-startup install
@@ -81,13 +85,34 @@ pm2 save
 
 | コマンド | 説明 |
 |---------|------|
-| `npm run doctor` | 起動前チェック。`.env` の必須項目・SELECTORS の `'TODO'` 残り・Node バージョンを検出（`npm start` 時に自動実行） |
+| `npm run doctor` | 起動前チェック。`.env` の必須項目・SELECTORS の `'TODO'` 残り・Node バージョン・他案件との設定競合を検出（index.ts 起動時にも同じチェックが走る） |
 | `npm start` | 本起動（巡回ループ）。ブラウザクラッシュ時は自動再起動、セッション切れ疑い時は再ログイン待ち |
 | `npm run login` | Lpro 初回ログイン（headedブラウザ） |
 | `npm run chatid` | Telegram グループの chat_id 取得（本体停止中に実行） |
 | `npm run dump` | トーク画面の実DOMを `dump/` に保存する診断ツール（UI変更時のセレクタ復旧用） |
-| `npm test` | 配信判定ロジック（`src/logic.ts`）の単体テスト |
+| `npm test` | 配信判定ロジック（`src/logic.ts`）と案件間の競合ルール（`src/instances.ts`）の単体テスト |
 | `npm run typecheck` | `tsc --noEmit` で型チェック（src + test） |
+
+## 複数案件の運用（2026-09-07〜）
+
+1つのコードベースで複数の案件（Lpro アカウント × Telegram Bot）を同時に動かせる。案件ごとに
+「設定 / ブラウザプロファイル / DB / バックアップ」を丸ごと分離し、プロセス（PM2 アプリ）も分ける。
+
+```
+lpro-telegram-bridge/
+├─ .env / .lpro-profile/ / bridge.db / backups/     ← 既定案件（最初の案件）。従来どおり・PM2 名 lpro-bridge
+└─ instances/
+   └─ <案件名>/                                    ← 追加案件（案件名は英数字・-・_ のみ）。PM2 名 lpro-bridge-<案件名>
+      ├─ .env                                      ← .env.example をコピーして記入（INSTANCE_LABEL に表示名）
+      └─ .lpro-profile/ bridge.db backups/ dump/   ← 自動生成
+```
+
+- 案件の選択: PM2 は `BRIDGE_INSTANCE=<案件名>`（`ecosystem.config.cjs` が instances/ を見て自動付与。**シェルで手動設定しない**）、
+  CLI は `npm run <script> -- --instance=<案件名>`（doctor / chatid / login / dump。`npm start` は既定案件専用）
+- 案件ごとに **別の Telegram Bot**（BotFather）と **別のグループ2つ**を用意する。同じトークン・グループ・
+  プロファイル・DB を2案件で使う設定は `npm run doctor` と起動時ガードが検出して止める（409 ループ／別案件への誤送信の防止）
+- 運用通知（💓・⚠️）には `[表示名]` が付く。ログイン待ちのブラウザには赤いバナー「【表示名】このウィンドウで…」が出る
+- 追加手順の詳細は RUNBOOK G章。
 
 ## 動作の要点
 

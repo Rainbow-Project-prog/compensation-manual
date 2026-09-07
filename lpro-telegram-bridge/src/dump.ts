@@ -7,19 +7,20 @@
  */
 import { chromium, type Frame } from 'playwright';
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { cfg, httpCredentials } from './config.js';
 
-// 出力先はサブフォルダ指定可（複数受信箱を別々に保存するため）: npm run dump -- <URL> <サブフォルダ名>
-const subdir = process.argv[3];
-const OUT = fileURLToPath(new URL(subdir ? `../dump/${subdir}` : '../dump', import.meta.url));
+// 引数: npm run dump -- <URL> <サブフォルダ名>（--instance=<案件名> は env.ts が読むので位置引数から除外）
+const positional = process.argv.slice(2).filter((a) => !a.startsWith('--'));
+// 出力先はサブフォルダ指定可（複数受信箱を別々に保存するため）。案件のデータディレクトリ配下 dump/
+const subdir = positional[1];
+const OUT = subdir ? join(cfg.dataDir, 'dump', subdir) : join(cfg.dataDir, 'dump');
 // 事前に判明している「トーク画面にしか無い」目印（担当者提供の断片より）
 const MARKER = '.btn_send, form[action*="linechat_message"], .mmsg_member, .mmsg_char';
 
 // URL を渡せば、その画面を直接開いて自動で dump する（ログイン済み前提・待機不要）。
 // 渡さなければ従来どおり手動で画面を開くのを待つ。
-const targetUrl = process.argv[2];
+const targetUrl = positional[0];
 
 const ctx = await chromium.launchPersistentContext(cfg.userDataDir, {
   headless: false,

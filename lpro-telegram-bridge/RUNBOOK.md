@@ -132,7 +132,7 @@ retry_after を待って再試行する）。作成失敗は次の配信サイ�
   のいずれかが必要。長時間放置すると新着が届かなくなる点を運用者が把握しておくこと。
 
 - PM2 の基本操作（実際に使ったコマンド）:
-  - `pm2 start ecosystem.config.cjs` … 起動（常駐開始）
+  - `pm2 start ecosystem.config.cjs --only lpro-bridge` … 起動（常駐開始）。**引数なしは全案件を再起動する**ので使わない（G章）
   - `pm2 logs lpro-bridge` … ログを追う
   - `pm2 restart lpro-bridge` … 再起動 / `pm2 stop lpro-bridge` … 停止
   - `pm2 save` … 現在のプロセス一覧を保存（自動復帰の対象にする。設定変更後は必ず実行）
@@ -161,6 +161,7 @@ retry_after を待って再試行する）。作成失敗は次の配信サイ�
   実パスは以下:
   - `C:\Users\masay\.pm2\logs\lpro-bridge-out.log`（標準出力）
   - `C:\Users\masay\.pm2\logs\lpro-bridge-error.log`（エラー）
+  - 追加案件は `lpro-bridge-<案件名>-out.log` / `-error.log`（案件ごとに別ファイル）
   ブリッジは会話本文をログに出さない方針だが、顧客表示名は運用ログに含まれる。
   ローテーションは `pm2 install pm2-logrotate` で**設定済み**（1ファイル 10MB 上限 / 30世代保持 / 圧縮）。
   無期限に肥大化することはない。
@@ -181,3 +182,71 @@ npm run typecheck   # 型エラー
 npm test            # 配信判定ロジックの単体テスト
 ```
 push すると GitHub Actions（`.github/workflows/bridge-ci.yml`）で typecheck + test が自動実行される。
+
+---
+
+## G. 案件（Lproアカウント）を追加する
+
+案件＝「Lpro アカウント1つ × Telegram Bot 1つ × グループ2つ」。案件ごとにプロセス（PM2 アプリ）と
+データ（instances/<案件名>/ 配下の .env / .lpro-profile / bridge.db / backups）を完全に分ける。
+既定案件（最初の案件）はルート配置のまま（アプリ名 `lpro-bridge`）。
+
+### 事前に用意するもの（担当者）
+
+| 種別 | 内容 |
+|---|---|
+| Lpro | ログインページURL（例 `https://lpro-pmN.com/manage/`）／/manage のベーシック認証 ID・パスワード／チャット応対URL（`.../manage/chat_message?method=frame`）／ダイレクトトーク応対URL（`.../manage/linechat_message_frame`）／Lpro のログインID・パスワード（初回ログイン時に人が入力。ブリッジには保存しない） |
+| Telegram Bot | BotFather で **新しい Bot** を作りトークンを控える（既存案件の Bot は使い回さない） |
+| Telegram グループ | 案件用にグループを **2つ**（チャット応対用／ダイレクトトーク応対用）作成 → 「トピック」を ON → 新 Bot を **管理者（トピックの管理）** で追加 |
+
+### 手順（PC 側）
+
+```powershell
+cd C:\Users\masay\compensation-manual\lpro-telegram-bridge
+mkdir instances\<案件名>                              # 英数字・-・_ のみ（例: foo）
+copy .env.example instances\<案件名>\.env             # 開いて記入（INSTANCE_LABEL=表示名、トークン、Lpro のURL/認証）
+npm run doctor -- --instance=<案件名>                  # 抜け・他案件との競合（同じトークン/グループ等）を検出
+npm run chatid -- --instance=<案件名>                  # 新 Bot で各グループにメッセージ → chat.id を .env に記入 → Ctrl+C
+npm run doctor -- --instance=<案件名>                  # もう一度 [OK] を確認
+npm run login  -- --instance=<案件名>                  # 開いたブラウザで Lpro にログイン（プロファイルに保存）→ Ctrl+C
+pm2 start ecosystem.config.cjs --only lpro-bridge-<案件名>
+pm2 logs lpro-bridge-<案件名>                          # 「巡回開始」を確認
+pm2 save                                              # ★必須★ 次回ログオン時の自動復帰に含める
+```
+
+- 案件名は**フォルダ名と大文字小文字まで同じ**に打つ（PM2 アプリ名・ログ名にもそのまま使われる）。
+- `npm run chatid` はその案件の Bot トークンだけで待ち受けるので、他案件の本体が稼働中でも安全（別 Bot）。
+  ただし同じ案件の本体が動いている状態では実行しない（409）。
+- 初回ログイン後、ログに `Lpro サイト確認: site_id=NN（表示名）` が出る。その NN を `.env` の `LPRO_SITE_ID` に記入して
+  `pm2 restart lpro-bridge-<案件名>`。以後、**別のアカウントでログインされると自動でログアウトして正しいログインを待つ**
+  （同じ Lpro サーバーに複数案件があるときの、別案件の顧客への誤送信防止。既定案件は `LPRO_SITE_ID=16` 設定済み）。
+- **競合の効き方（非対称）**: 追加案件の `.env` が他案件と同じ Bot トークン／グループ／プロファイル／DB を指していると、
+  **追加案件側が起動を拒否**する（`⚠️ 起動前チェックに失敗` が Telegram に届く）。既定案件（ひかり）は止めず、警告を
+  Telegram に出して稼働を続ける。作りかけ・コピーしただけの `instances/<案件名>/.env` を放置しない。
+- 一時的に外す／準備中にしておく: `pm2 delete lpro-bridge-<案件名>` → `pm2 save`（PM2 に登録済みのアプリはファイルを
+  改名してもログオン時に起動されるため、必ず PM2 からも外す）＋ `instances/<案件名>/.env` を `.env.disabled` に改名
+  （ecosystem の一覧・競合チェックの両方から外れる）。**稼働中の `.env` を別案件のテンプレートにコピーしない**
+  （Bot・グループが同じままだと競合になる）。
+- 既定案件（ひかり）の再起動時に「稼働中の案件（bridge.lock が2分以内に更新されている案件）」と Bot/グループ/フォルダが
+  重なっていれば、既定案件も起動を拒否する（`⚠️ 起動前チェックに失敗` 通知）。相手が止まっているときは警告のみで稼働継続。
+- 起動前チェック失敗の Telegram 通知は、その案件の Bot トークンとグループが有効なときだけ届く（トークン未設定などの
+  作りかけでは届かない）。届かないときは `pm2 logs lpro-bridge-<案件名>` を見る。
+- **シェルで `BRIDGE_INSTANCE` を手動設定しない**。PM2 は起動時にシェルの環境変数を丸ごと取り込むため、その状態で
+  `pm2 start ecosystem.config.cjs` / `pm2 restart --update-env` を打つと既定案件が別案件として立ち上がる。
+  起動時に「PM2 アプリ名と案件が一致しません」で止まる安全弁はあるが、起動自体が止まる。案件の指定は必ず `--instance=`（CLI）か
+  `ecosystem.config.cjs`（PM2）に任せる。
+- 引数なしの `pm2 start ecosystem.config.cjs` は稼働中の案件まで再起動してしまう。追加は必ず `--only`。
+- 停止／撤去: `pm2 stop lpro-bridge-<案件名>`／`pm2 delete lpro-bridge-<案件名>` → `pm2 save`。データは instances/<案件名>/ に残る。
+- 通知は `[表示名]` 付きで届く。ログイン待ちのウィンドウには赤いバナー「【表示名】このウィンドウで Lpro にログインしてください」が
+  出るので、案件が複数あってもどのウィンドウでログインすべきか取り違えない。
+- リソース目安: 1案件あたり node 約 0.7GB ＋ chromium 約 0.8GB（32GB 機なら数案件は余裕）。
+- **未検証**: 同じ Lpro アカウント（同じログイン）を2案件で使う構成（Lpro が同時セッションを許すか不明。片方のログインが他方を失効させる恐れ）。
+  案件＝別アカウントを前提にする。
+
+### 日次のブラウザ再起動（2026-09-07〜）
+
+長時間稼働で「一覧に行が1件もありません」「検索フォームが現れません」などの一過性エラーが日を追って増える
+傾向が観測されたため（2期間で再現。9日目に初日の約7倍）、毎朝の日次ティック（💓の直後）にブラウザを閉じて
+開き直す。ログインセッションはプロファイルに残るので再ログインは不要（失効していれば通常のログイン待ちに入る）。
+`DAILY_BROWSER_RECYCLE=false` で無効化できる。💓には「一覧取得失敗 N 回 / 会話処理失敗 N 回」も載るので、
+傾向が戻らない場合はこの数字で気付ける。

@@ -1,9 +1,12 @@
 import Database from 'better-sqlite3';
-import { fileURLToPath } from 'node:url';
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
+import { cfg } from './config.js';
 
-// CWD 依存にすると別ディレクトリから起動したとき .gitignore の保護外に顧客DBが生成されるため、
-// パッケージルート基準の固定パスにする
-const dbPath = fileURLToPath(new URL('../bridge.db', import.meta.url));
+// DB の場所は案件のデータディレクトリ基準（既定案件=パッケージルート/bridge.db、
+// 案件名あり=instances/<案件名>/bridge.db。config.ts / paths.ts 参照）。CWD には依存しない
+const dbPath = cfg.dbPath;
+mkdirSync(dirname(dbPath), { recursive: true });
 const db = new Database(dbPath);
 db.pragma('journal_mode = WAL');
 

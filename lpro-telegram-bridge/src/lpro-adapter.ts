@@ -28,10 +28,27 @@ function warnOnce(key: string, msg: string): void {
 /** ログイン失効（手動ログイン待ち）／復旧を運用へ通知するフック。index.ts が notifyOps を接続する。
  * ensureLoggedIn は startBot より前（initBrowser 内）でも走るが、notifyOps は bot.api 経由なので
  * bot の長ポーリング未起動でも送れる。未設定でも待機動作は変わらない（テストや login.ts では無音）。 */
-export type LoginEvent = 'waiting' | 'recovered';
-let loginNotifier: ((e: LoginEvent) => void) | null = null;
-export function setLoginNotifier(fn: ((e: LoginEvent) => void) | null): void {
+export type LoginEvent = 'waiting' | 'wrong-site' | 'recovered';
+let loginNotifier: ((e: LoginEvent, detail?: string) => void) | null = null;
+export function setLoginNotifier(fn: ((e: LoginEvent, detail?: string) => void) | null): void {
   loginNotifier = fn;
+}
+// 手動ログイン待ち（or 別アカウントからのログインし直し待ち）の最中か。日次のブラウザ再起動はこの間スキップする
+let loginWaiting = false;
+export function isLoginWaiting(): boolean {
+  return loginWaiting;
+}
+// ブラウザ世代。initBrowser が成功するたびに増える。巡回ループの復旧経路が「エラー観測後に別経路（日次再起動）で
+// 既に開き直された」ことを検知して二重再起動しないために使う
+let generation = 0;
+export function browserGeneration(): number {
+  return generation;
+}
+const loggedOnce = new Set<string>();
+function logOnce(key: string, msg: string): void {
+  if (loggedOnce.has(key)) return;
+  loggedOnce.add(key);
+  console.log(msg);
 }
 
 function clean(s: string | null | undefined): string {
@@ -47,10 +64,14 @@ function clean(s: string | null | undefined): string {
 async function killStaleProfileChromium(): Promise<void> {
   if (process.platform !== 'win32') return;
   const dir = resolve(cfg.userDataDir);
-  const pattern = `*${dir.replace(/'/g, "''")}*`; // PowerShell 単一引用符のエスケープ
+  // --user-data-dir=<dir> の完全一致だけを狙う。前方一致（*<dir>*）だと instances/a と instances/ab の
+  // ように別案件のプロファイルまで巻き添えで殺す。引用符の有無・末尾の区切り（空白/行末）両対応。
+  // .NET 正規表現のメタ文字と PowerShell 単一引用符をエスケープする
+  const escaped = dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/'/g, "''");
+  const re = `--user-data-dir="?${escaped}"?(\\s|$)`;
   const psCmd =
     `Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" | ` +
-    `Where-Object { $_.CommandLine -like '${pattern}' } | ` +
+    `Where-Object { $_.CommandLine -match '${re}' } | ` +
     `ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`;
   await new Promise<void>((res) => {
     execFile(
@@ -100,6 +121,7 @@ export async function initBrowser(): Promise<void> {
   }
   page = ctx!.pages()[0] ?? (await ctx!.newPage());
   currentInboxId = null;
+  generation++;
   // 最初の受信箱でログイン確認（複数受信箱でもログインは共通のセッション）
   await ensureLoggedIn(inboxes[0]);
 }
@@ -110,6 +132,35 @@ export async function closeBrowser(): Promise<void> {
   ctx = null;
   page = null;
   currentInboxId = null;
+}
+
+/**
+ * ブラウザ（chromium）を閉じて開き直す（日次の定期再起動）。長時間稼働で一覧の空振り・検索フォーム待ちの
+ * タイムアウトが日を追って増える傾向（2026-08-16〜20、08-30〜09-07 の2期間で観測。9日目で約7倍）を
+ * リセットする。★必ず runExclusive 内で呼ぶこと★（巡回・返信と直列化し、送信途中のブラウザを閉じない）。
+ * ログインセッションは Cookie としてプロファイルに永続化済みで、閉じて開き直しても維持される
+ * （PM2 restart で繰り返し実証済み）。万一失効していれば initBrowser 内の ensureLoggedIn が通常どおり
+ * ログイン待ち＋アラートに入る。close が固まっても待ちは有限にし、残存 chromium は強制終了してから
+ * 開き直す（ctx を先に手放すので、initBrowser が固まった close を再び待つことはない）。
+ */
+export async function recycleBrowser(shouldAbort: () => boolean = () => false): Promise<void> {
+  const old = ctx;
+  ctx = null;
+  page = null;
+  currentInboxId = null;
+  if (old) {
+    const closed = await Promise.race([
+      old.close().then(() => true, () => true),
+      new Promise<boolean>((r) => setTimeout(() => r(false), 30_000)),
+    ]);
+    if (!closed) {
+      console.warn('ブラウザの終了が30秒で完了しません。残存 chromium を強制終了してから開き直します');
+      await killStaleProfileChromium();
+    }
+  }
+  // 閉じている間に終了処理（PM2 stop）が始まっていたら開き直さない（chromium 残骸・不要なログイン待ちを作らない）
+  if (shouldAbort()) return;
+  await initBrowser();
 }
 
 /** ブラウザ/ページが閉じられた・クラッシュした系のエラーか（復旧判定用） */
@@ -161,6 +212,65 @@ async function gotoInbox(inbox: Inbox, timeoutMs = 20_000): Promise<Frame> {
   throw new Error(`${inbox.name}: トーク画面（chatframe）が表示されません（セッション切れの疑い）`);
 }
 
+/** ログイン中の Lpro サイト（＝アカウント）の識別子: 検索フォーム iframe の URL に載る site_id。
+ * 読めなければ空＝照合しない（誤ロックアウトより見逃しを選ぶ）。
+ * （/manage シェルの .sitename 表示名は、ブリッジが開く画面（chat_message?method=frame 等）には無いので読まない） */
+async function readSiteId(inbox: Inbox): Promise<string> {
+  const p = page!;
+  const deadline = Date.now() + 8_000;
+  while (Date.now() < deadline) {
+    const m = findMenuFrame(inbox);
+    let id: string | null = null;
+    try { id = m ? new URL(m.url()).searchParams.get('site_id') : null; } catch { id = null; }
+    if (id) return id.trim();
+    await p.waitForTimeout(300);
+  }
+  return '';
+}
+
+// site_id の比較は先頭ゼロを無視する（"016" と "16" を別物にすると永久ログイン待ちになる）
+const normSiteId = (s: string): string => s.trim().replace(/^0+(?=\d)/, '');
+
+/** 期待するサイトID（LPRO_SITE_ID）と違うアカウントでログインしていれば、その説明文を返す（照合不能/一致なら null） */
+async function siteMismatch(inbox: Inbox): Promise<string | null> {
+  const siteId = await readSiteId(inbox);
+  logOnce(
+    `site:${siteId}`,
+    `Lpro サイト確認: site_id=${siteId || '?'}` +
+      (cfg.lproSiteId
+        ? ` / 期待 site_id=${cfg.lproSiteId}`
+        : '（LPRO_SITE_ID 未設定＝照合なし。.env に設定すると別アカウントでのログインを自動で弾けます）')
+  );
+  if (cfg.lproSiteId && siteId && normSiteId(siteId) !== normSiteId(cfg.lproSiteId)) {
+    return `期待 site_id=${cfg.lproSiteId} に対して site_id=${siteId} でログインされています`;
+  }
+  return null;
+}
+
+/**
+ * Lpro からログアウトする（別アカウントでログインされていたとき用）。
+ * /manage シェルを開いてログアウトリンクの href を辿る（無ければ <LPRO_LOGIN_URL>/logout。末尾スラッシュの有無に依らず
+ * /manage/logout に解決する）。実際にログアウトできたか（ログイン済みマーカーが消えたか）を返す。
+ * ログアウトが効かない環境で「ログアウトしました」と言い続ける高速ループにしないための検証
+ */
+async function logoutLpro(p: Page): Promise<boolean> {
+  await p.goto(cfg.loginUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
+  let target: string | null = null;
+  try {
+    const href = await p.locator(SELECTORS.loggedInMarker).first().getAttribute('href', { timeout: 2_000 });
+    if (href) target = new URL(href, p.url()).toString();
+  } catch { /* シェル以外の画面ならフォールバック */ }
+  if (!target) {
+    const base = cfg.loginUrl.endsWith('/') ? cfg.loginUrl : cfg.loginUrl + '/';
+    target = new URL('logout', base).toString();
+  }
+  await p.goto(target, { waitUntil: 'domcontentloaded' }).catch(() => {});
+  await p.goto(cfg.loginUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
+  const stillIn = await p.locator(SELECTORS.loggedInMarker).first()
+    .waitFor({ state: 'visible', timeout: 3_000 }).then(() => true, () => false);
+  return !stillIn;
+}
+
 export async function ensureLoggedIn(inbox: Inbox = inboxes[0]): Promise<void> {
   const p = page!;
   await p.goto(inbox.talkUrl, { waitUntil: 'domcontentloaded' });
@@ -169,31 +279,89 @@ export async function ensureLoggedIn(inbox: Inbox = inboxes[0]): Promise<void> {
   let ok = await findChatFrame(inbox)
     ? true
     : await gotoInbox(inbox, 15_000).then(() => true).catch(() => false);
+  // ログイン済みでも「この案件とは別のアカウント」なら受信・返信に進んではいけない（別案件の顧客への誤送信）。
+  // ログアウトして、正しいアカウントでのログイン待ちに入る
+  let wrongSite: string | null = ok ? await siteMismatch(inbox) : null;
+  let initialLogoutFailed = false;
+  if (wrongSite) {
+    ok = false;
+    initialLogoutFailed = !(await logoutLpro(p));
+  }
   if (!ok) {
     if (cfg.headless) {
       throw new Error(
-        '未ログインですが HEADLESS=true のため手動ログインできません。' +
-        '.env で HEADLESS=false にして `npm run login` を実行してください'
+        (wrongSite ? `別のアカウントでログインされています（${wrongSite}）が、` : '未ログインですが ') +
+        'HEADLESS=true のため手動ログインできません。.env で HEADLESS=false にして `npm run login` を実行してください'
       );
     }
     // ★以前は5分デッドラインで throw していたが、それだと PM2 が即再起動し、開いていた
     //   ログイン用ウィンドウごと消えて 2FA を中断してしまう（＝誰にも通知されない無音クラッシュループ）。
     //   ヘッドフルなので手動ログインが済むまで待ち続け、運用グループには即時＋定期的にアラートする。
-    console.log('未ログインの可能性。表示中のブラウザでログイン（2FA含む）してください。ログインを確認するまで待機します…');
-    await p.goto(cfg.loginUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
+    loginWaiting = true;
+    // アラートの間隔: 通常は15分ごと。別アカウント検出時は（前回から1分以上空いていれば）即時に知らせる。
+    // ループの外で持つ＝「別アカウント→ログアウト」を繰り返しても通知が連発しない
+    const REALERT_MS = 15 * 60_000;
+    const MIN_GAP_MS = 60_000;
+    let lastAlertAt = 0;
     let nextAlertAt = 0; // 0 = まず1回目のアラートを即送る
-    const REALERT_MS = 15 * 60_000; // 待機が続く間は15分ごとに再通知（気付けるように・ただしスパムは避ける）
-    while (!ok) {
-      if (Date.now() >= nextAlertAt) {
-        try { loginNotifier?.('waiting'); } catch { /* 通知失敗で待機を止めない */ }
-        nextAlertAt = Date.now() + REALERT_MS;
+    let logoutFailed = initialLogoutFailed;
+    try {
+      for (;;) {
+        if (wrongSite) {
+          console.log(
+            logoutFailed
+              ? `別のアカウントでログインされています（${wrongSite}）が自動ログアウトできませんでした。ブラウザで手動ログアウトし、この案件のアカウントでログインしてください…`
+              : `別のアカウントでログインされていました（${wrongSite}）。ログアウトしました。この案件のアカウントでログインしてください…`
+          );
+          // 自動ログアウトが効いた場合は人が再ログインするたびに（1分以上空けて）即知らせる。
+          // 効かずに自走している間は15分間隔のまま（通知の連発防止）
+          if (!logoutFailed) nextAlertAt = Math.min(nextAlertAt, lastAlertAt + MIN_GAP_MS);
+        } else {
+          console.log('未ログインの可能性。表示中のブラウザでログイン（2FA含む）してください。ログインを確認するまで待機します…');
+        }
+        if (!logoutFailed) await p.goto(cfg.loginUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
+        // 複数案件を同じPCで動かすとログイン待ちウィンドウが複数並ぶため、どの案件のウィンドウかを
+        // ページ上のバナーとタイトル（タスクバー表示）で示す。ログイン画面の DOM に載せるだけで、
+        // フォームには触れない（pointer-events:none＝入力欄を覆っても操作を邪魔しない）。失敗しても待機動作には影響しない
+        await p.evaluate((a) => {
+          document.title = `【${a.label}】ログインしてください - ${document.title}`;
+          const d = document.createElement('div');
+          d.textContent = a.wrong
+            ? (a.logoutFailed
+              ? `【${a.label}】Lproブリッジ: 別のアカウント（${a.wrong}）でログインされています。自動ログアウトできなかったので、手動でログアウトしてこの案件のアカウントでログインし直してください`
+              : `【${a.label}】Lproブリッジ: 別のアカウント（${a.wrong}）でログインされていたためログアウトしました。この案件のアカウントでログインし直してください`)
+            : `【${a.label}】Lproブリッジ: このウィンドウで Lpro にログインしてください（ログイン後は自動で監視を再開します）`;
+          d.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;background:#c43c3c;color:#fff;font:bold 15px sans-serif;padding:10px 16px;text-align:center;pointer-events:none;';
+          document.body?.prepend(d);
+        }, { label: cfg.instanceLabel || 'Lproブリッジ', wrong: wrongSite, logoutFailed }).catch(() => {});
+        let seen = false;
+        while (!seen) {
+          if (Date.now() >= nextAlertAt) {
+            try {
+              loginNotifier?.(
+                wrongSite ? 'wrong-site' : 'waiting',
+                wrongSite ? (logoutFailed ? `${wrongSite}。自動ログアウトに失敗したため手動ログアウトが必要です` : wrongSite) : undefined
+              );
+            } catch { /* 通知失敗で待機を止めない */ }
+            lastAlertAt = Date.now();
+            nextAlertAt = lastAlertAt + REALERT_MS;
+          }
+          seen = await p.locator(SELECTORS.loggedInMarker).first().isVisible().catch(() => false);
+          if (!seen) await p.waitForTimeout(2000);
+        }
+        // 実際に受信箱へ到達できてから「復旧・監視再開」を通知する（gotoInbox が失敗したら
+        // 誤って再開を告げず、throw は呼び出し側（main().catch / 巡回の復旧経路）に委ねる）
+        await gotoInbox(inbox, 30_000);
+        wrongSite = await siteMismatch(inbox);
+        if (!wrongSite) break;
+        // また別アカウント → ログアウトしてやり直し。ログアウトが効かなければ人の手動ログアウトを待つ
+        // （画面を奪い続けないよう 30 秒あけてから再確認）
+        logoutFailed = !(await logoutLpro(p));
+        if (logoutFailed) await p.waitForTimeout(30_000);
       }
-      ok = await p.locator(SELECTORS.loggedInMarker).first().isVisible().catch(() => false);
-      if (!ok) await p.waitForTimeout(2000);
+    } finally {
+      loginWaiting = false;
     }
-    // 実際に受信箱へ到達できてから「復旧・監視再開」を通知する（gotoInbox が失敗したら
-    // 誤って再開を告げず、throw は main().catch のアラートに委ねる）
-    await gotoInbox(inbox, 30_000);
     try { loginNotifier?.('recovered'); } catch { /* noop */ }
   }
   console.log(`Lpro ログイン確認OK（${inbox.name}）`);

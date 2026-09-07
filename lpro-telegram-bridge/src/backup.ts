@@ -1,10 +1,10 @@
 import { mkdirSync, existsSync, readdirSync, unlinkSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { backupTo } from './db.js';
+import { cfg } from './config.js';
 
-// バックアップ先はパッケージルート直下 backups/（.gitignore 済み・顧客データを含むため）
-const backupDir = fileURLToPath(new URL('../backups', import.meta.url));
+// バックアップ先は案件のデータディレクトリ直下 backups/（.gitignore 済み・顧客データを含むため）
+const backupDir = cfg.backupDir;
 
 const NAME_RE = /^bridge-\d{4}-\d{2}-\d{2}\.db$/;
 

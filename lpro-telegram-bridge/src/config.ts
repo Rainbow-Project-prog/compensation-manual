@@ -1,23 +1,34 @@
-import 'dotenv/config';
-import { fileURLToPath } from 'node:url';
-import { join } from 'node:path';
+// ★env.js を最初に import する（案件の解決と .env の読み込み。他の import より先）★
+import { instanceId, dataDir, envPath } from './env.js';
+import { resolveDataPaths } from './paths.js';
 
-// DB・プロファイルの既定パスは CWD ではなくパッケージルート基準にする
-// （別ディレクトリから起動すると .gitignore の保護外に顧客データが生成されるため）
-const pkgRoot = fileURLToPath(new URL('..', import.meta.url));
+// DB・プロファイル・バックアップは案件のデータディレクトリ基準（CWD 非依存）。
+// 既定案件はパッケージルート、案件名ありは instances/<案件名>/（env.ts / paths.ts 参照）
+const paths = resolveDataPaths(dataDir, process.env);
 
 export const cfg = {
+  // 案件（インスタンス）: ID はディレクトリ名・PM2 アプリ名、LABEL は運用通知・ログイン待ち画面の表示名
+  instanceId,
+  instanceLabel: (process.env.INSTANCE_LABEL ?? '').trim() || instanceId,
+  dataDir,
+  envPath,
+  dbPath: paths.dbPath,
+  backupDir: paths.backupDir,
   telegramToken: required('TELEGRAM_BOT_TOKEN'),
   loginUrl: required('LPRO_LOGIN_URL'),
   pollIntervalMs: Math.max(1000, num('POLL_INTERVAL_MS', 8000)),
   onlyUnread: (process.env.ONLY_UNREAD ?? 'true') === 'true',
   headless: (process.env.HEADLESS ?? 'false') === 'true',
-  userDataDir: process.env.USER_DATA_DIR ?? join(pkgRoot, '.lpro-profile'),
+  userDataDir: paths.userDataDir,
   // Lpro の /manage は HTTP ベーシック認証（realm "InfoSys Manager"）で保護されている。
   // これは Cookie と違いプロファイルに永続しないため、環境変数から毎回渡す必要がある
   // （設定すると Playwright が認証チャレンジに自動応答する）。Lpro アプリのログインとは別物。
   basicUser: process.env.LPRO_BASIC_USER ?? '',
   basicPass: process.env.LPRO_BASIC_PASS ?? '',
+  // この案件の Lpro サイトID（menu iframe の URL に載る site_id。初回ログイン後のログ「Lpro サイト確認: site_id=NN」で分かる）。
+  // 設定すると、別のアカウントでログインされた場合に自動ログアウトして正しいログインを待つ
+  // （同じ Lpro サーバーに複数案件がある場合の、別案件の顧客への誤送信防止）。空なら照合しない
+  lproSiteId: (process.env.LPRO_SITE_ID ?? '').trim(),
   // 停止中・稼働中に初めて現れた顧客（=いま送ってきた新規顧客）の初回配信件数。
   // 0にすると初回は何も配らない＝初回メッセージを取りこぼすので注意。
   bootstrapTail: num('BOOTSTRAP_TAIL', 5),
@@ -36,6 +47,11 @@ export const cfg = {
   dailyTickHour: Math.min(23, num('DAILY_TICK_HOUR', 9)),
   // DBバックアップの保持世代数（1日1世代）
   backupRetain: Math.max(1, num('BACKUP_RETAIN', 14)),
+  // 日次ティックでブラウザ（chromium）を閉じて開き直す。長時間稼働で一覧の空振り・検索フォーム待ちの
+  // タイムアウト（「一覧に行が1件もありません」「検索フォームが現れません」）が日を追って増える傾向が
+  // 2つの稼働期間（2026-08-16〜20、08-30〜09-07: 9日目で初日の約7倍）で観測されたため、1日1回リセットする。
+  // ログインセッションは Cookie としてプロファイルに永続化されており、閉じて開き直しても維持される。
+  dailyBrowserRecycle: (process.env.DAILY_BROWSER_RECYCLE ?? 'true') === 'true',
 };
 
 /**

@@ -133,6 +133,9 @@ Ultracode で実施し、結果を私に報告してから §5 の実装フェ�
 ## 4. コードの構造（レビュー時の地図）
 
 ```
+src/env.ts           ← 案件（インスタンス）の解決と .env 読み込み（★最初に import される★）
+src/paths.ts         ← 案件のデータ配置規則（純関数）
+src/instances.ts     ← 複数案件の列挙と案件間の設定競合検出（doctor / 起動ガードが使う）
 src/config.ts        ← ★Lpro依存の集約点。SELECTORS 14項目（実機DOMで全確定済み）★
 src/lpro-adapter.ts  ← ★Playwright 操作。壊れたらここと config.ts だけ直す設計★
 src/logic.ts         ← 配信判定の純関数（test/logic.test.ts で12ケース検証済み）

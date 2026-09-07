@@ -2,10 +2,13 @@
  * 起動前チェックの本体。doctor.ts（CLI）と index.ts（起動時ガード。PM2 は npm を
  * 経由しないため prestart が走らず、ここで再チェックする）から使う。
  */
-import 'dotenv/config';
+// ★env.js を最初に import する（案件の解決と .env の読み込み）★
+import { instanceId, dataDir, envPath } from './env.js';
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { describeInstance, listInstances, findInstanceConflicts, findInstanceWarnings, samePath, isInstanceLive } from './instances.js';
+import { pm2AppName } from './paths.js';
 
 const REQUIRED_ENV = [
   'TELEGRAM_BOT_TOKEN',
@@ -18,11 +21,16 @@ const INBOX_ENV = [
   { name: 'ダイレクトトーク応対', url: 'TALK_TALK_URL', group: 'TALK_GROUP_CHAT_ID' },
 ] as const;
 
-export type PreflightResult = { problems: string[]; warnings: string[] };
+export type PreflightResult = { problems: string[]; warnings: string[]; notes: string[] };
 
 export function runDoctor(): PreflightResult {
   const problems: string[] = [];
   const warnings: string[] = [];
+  const notes: string[] = [];
+
+  // どの案件として動いているか（複数案件運用で「別案件の .env を見ていた」を一目で分かるように）
+  const label = (process.env.INSTANCE_LABEL ?? '').trim() || instanceId || '既定';
+  notes.push(`案件: ${label}${instanceId ? ` (id=${instanceId})` : '（ルート配置）'} / 設定: ${envPath} / データ: ${dataDir}`);
 
   // 0) Node バージョン（PM2 の `node --import tsx` 起動には 20.6+ が必要）
   const [maj = 0, min = 0] = process.versions.node.split('.').map(Number);
@@ -30,10 +38,9 @@ export function runDoctor(): PreflightResult {
     problems.push(`Node ${process.versions.node} は古すぎます（20.6 以上が必要）`);
   }
 
-  // 1) .env の存在
-  const envPath = fileURLToPath(new URL('../.env', import.meta.url));
+  // 1) .env の存在（通常は env.ts が先に検知して止めるが、DOTENV_CONFIG_PATH 指定等の保険）
   if (!existsSync(envPath)) {
-    problems.push('.env が見つかりません（.env.example をコピーして作成してください）');
+    problems.push(`設定ファイルが見つかりません: ${envPath}（.env.example をコピーして作成してください）`);
   }
 
   // 2) 必須環境変数
@@ -68,6 +75,53 @@ export function runDoctor(): PreflightResult {
   // 認証は Cookie と違いプロファイルに永続しないため、環境変数からの供給が必須
   if (anyTalkUnderManage && !process.env.LPRO_BASIC_USER) {
     problems.push('LPRO_BASIC_USER / LPRO_BASIC_PASS が未設定です（/manage は HTTP ベーシック認証で保護されています）');
+  }
+
+  // 他案件との資源競合（同じ Bot トークン / グループ / プロファイル / DB）。どれも 409 ループや
+  // 別案件の顧客への誤送信に直結する（instances.ts 参照）。効き方は非対称:
+  //  - 追加案件（instances/<名前>）は起動を拒否する
+  //  - 既定案件（ルート .env＝本番）は、相手が「いま稼働中」（bridge.lock が新しい）なら拒否、
+  //    止まっている/作りかけの相手なら警告＋Telegram 通知で稼働継続。作りかけ・コピーしただけの
+  //    instances/<名前>/.env が本番の再起動を無音で殺す方が害が大きい一方、稼働中の相手と同じ Bot で
+  //    起動すると 409 の交互クラッシュと別案件への誤送信になるため
+  try {
+    const me = describeInstance(instanceId, dataDir, envPath, process.env);
+    // 自分自身はデータディレクトリの同一性で除く（--instance=Foo と フォルダ foo のような大文字小文字違いで
+    // 自分と競合したことにならないように）
+    const others = listInstances().filter((i) => !samePath(i.dir, dataDir));
+    if (others.length > 0) notes.push(`他の案件: ${others.map((o) => o.id || '既定').join(', ')}`);
+    for (const o of others) {
+      const conflicts = findInstanceConflicts(me, [o]);
+      if (conflicts.length === 0) continue;
+      if (instanceId !== '') problems.push(...conflicts);
+      else if (isInstanceLive(o)) problems.push(...conflicts.map((c) => `【稼働中の案件と競合】${c}`));
+      else warnings.push(...conflicts.map((c) => `【既定案件は稼働継続・相手は停止中】${c}`));
+    }
+    warnings.push(...findInstanceWarnings(me, others));
+  } catch (e) {
+    warnings.push(`案件間の競合チェックに失敗しました（続行）: ${String(e).slice(0, 120)}`);
+  }
+
+  // PM2 配下では「アプリ名 ⇔ 案件」の対応を照合する。PM2 は起動時にシェルの環境変数を丸ごと取り込むため、
+  // シェルに BRIDGE_INSTANCE が残っていると既定案件のアプリが別案件として立ち上がり（同じ Bot で 409 の
+  // 交互クラッシュ＋既定案件が無巡回）、案件間チェックでは検出できない（自分＝その案件になるため）
+  if (process.env.pm_id !== undefined && process.env.name) {
+    const expected = pm2AppName(instanceId);
+    if (process.env.name !== expected) {
+      problems.push(
+        `PM2 アプリ名 "${process.env.name}" と案件 "${instanceId || '既定'}"（期待アプリ名 ${expected}）が一致しません。` +
+        'シェルの環境変数 BRIDGE_INSTANCE が PM2 に取り込まれた疑いがあります（BRIDGE_INSTANCE を unset した新しいシェルから pm2 を操作してください）'
+      );
+    }
+  }
+
+  // LPRO_SITE_ID は数値（menu iframe の URL の site_id）。タイプミスは「常に別アカウント扱い」＝ログイン待ちの永久ループになる
+  {
+    const raw = (process.env.LPRO_SITE_ID ?? '').trim();
+    if (raw !== '' && !/^\d+$/.test(raw)) problems.push(`環境変数 LPRO_SITE_ID は数値で指定してください: "${raw}"`);
+    else if (/^0\d/.test(raw)) warnings.push(`環境変数 LPRO_SITE_ID の先頭ゼロは無視して比較します: "${raw}"`);
+    const lu = (process.env.LPRO_LOGIN_URL ?? '').trim();
+    if (lu && !/\/manage\/?$/.test(lu)) warnings.push(`LPRO_LOGIN_URL は通常 https://<ホスト>/manage/ です（現在: ${lu}）。別アカウント検出時のログアウト URL はこの値から作られます`);
   }
 
   // 数値系はタイプミス（NaN）が「初回メッセージの無音喪失」「ウェイトなし巡回」に直結するため事前に弾く
@@ -108,11 +162,12 @@ export function runDoctor(): PreflightResult {
     warnings.push(`lpro-adapter.ts に未実装の TODO コメントが ${todoCount} 件あります（送信検証・会話の開き方を確認）`);
   }
 
-  return { problems, warnings };
+  return { problems, warnings, notes };
 }
 
 export function printResult(r: PreflightResult): void {
   console.log('=== Lpro ⇄ Telegram bridge doctor ===');
+  for (const n of r.notes) console.log('  ' + n);
   if (r.warnings.length) {
     console.log('\n[warn]');
     for (const w of r.warnings) console.log('  - ' + w);
