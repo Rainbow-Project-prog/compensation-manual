@@ -1,8 +1,13 @@
 import { chromium, type BrowserContext, type Page, type Frame, type Locator } from 'playwright';
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { toConvMessages, type ScanMsg, type ConvMsg } from './logic.js';
 import { cfg, SELECTORS, SEND_ACCEPT_RE, DISPLAY_LIMIT, DISPLAY_LIMIT_FALLBACK, httpCredentials, inboxes, type Inbox } from './config.js';
+import {
+  cookiesToRestore, describeCookies, cookieSignature, saveSessionFile, loadSessionFile, sessionFileSupported,
+  type CookieRec,
+} from './session.js';
 
 /** conv.memberId は Lpro の会員ID（受信箱に依らず顧客不変）。DBキーは inbox 込みで index.ts が合成。
  * inbound は巡回時に一括抽出済みの顧客発言（共有画面の割り込み競合を避けるため poll 内で確定させる）。
@@ -51,6 +56,117 @@ function logOnce(key: string, msg: string): void {
   console.log(msg);
 }
 
+// ── ログイン Cookie の引き継ぎ（背景と方式は src/session.ts の冒頭）──
+// 開き直し（recycleBrowser）／再初期化で閉じる直前に退避した Lpro の Cookie。直後の initBrowser が1回だけ消費する
+let carriedCookies: CookieRec[] | null = null;
+// いまのブラウザ（ctx）が「ログイン確認OK」を通ったか。通っていない間の Cookie（ログイン画面が発行した未認証の
+// JSESSIONID、別アカウントのもの）を退避すると、直前まで有効だった退避分を上書きしてしまうので、退避の条件にする
+let sessionVerified = false;
+// 直近に .lpro-session へ書いた内容のシグネチャ（同じ内容の書き直し＝PowerShell 起動を省く）
+let lastSavedSig: string | null = null;
+// 退避の書き込みは直列化する（ログイン確認OK の非同期保存と終了時の保存が重ならないように）
+let saveChain: Promise<void> = Promise.resolve();
+
+const sessionOwner = (): { instanceId: string; host: string } => ({ instanceId: cfg.instanceId, host: new URL(cfg.loginUrl).host });
+
+/** Lpro（loginUrl のオリジン）へ送られる Cookie。値はログに出さないこと */
+async function lproCookies(c: BrowserContext): Promise<CookieRec[]> {
+  return (await c.cookies([cfg.loginUrl])) as CookieRec[];
+}
+
+/** 閉じる前に Lpro の Cookie をプロセス内に退避する（上限時間付き。取れなければ null＝.lpro-session 頼み） */
+async function carryCookies(c: BrowserContext): Promise<void> {
+  const cs = await Promise.race([
+    lproCookies(c).catch(() => null),
+    new Promise<null>((r) => setTimeout(() => r(null), 10_000)),
+  ]);
+  carriedCookies = cs && cs.length > 0 ? cs : null;
+}
+
+/** 起動直後（ナビゲーション前）: プロファイルに無い Lpro の Cookie を、開き直し前の退避分 → .lpro-session の順で戻す */
+async function restoreSessionCookies(c: BrowserContext): Promise<void> {
+  const present = await lproCookies(c);
+  let snapshot: CookieRec[] = [];
+  let source = '';
+  if (carriedCookies) {
+    snapshot = carriedCookies;
+    source = '開き直し前の退避分';
+  } else if (sessionFileSupported()) {
+    // 起動直後は PowerShell のコールドスタートで時間がかかることがあるので 1 回だけ再試行する
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const loaded = await loadSessionFile(cfg.sessionFile, sessionOwner());
+        if (loaded) {
+          snapshot = loaded.cookies;
+          source = `.lpro-session（${loaded.savedAt} 保存）`;
+        }
+        break;
+      } catch (e) {
+        const msg = String(e).slice(0, 220);
+        if (attempt === 1 && !/別の案件|形式が不明|内容が不正/.test(msg)) {
+          await new Promise((r) => setTimeout(r, 1500));
+          continue;
+        }
+        console.warn(`.lpro-session を読めませんでした（無視して通常のログイン確認に進みます）: ${msg}`);
+        break;
+      }
+    }
+  }
+  carriedCookies = null;
+  const toAdd = cookiesToRestore(snapshot, present, Math.floor(Date.now() / 1000));
+  if (toAdd.length > 0) {
+    try {
+      await c.addCookies(toAdd);
+      console.log(`Lpro Cookie を復元: ${describeCookies(toAdd)}（${source}）`);
+    } catch (e) {
+      console.warn(`Lpro Cookie の復元に失敗（通常のログイン確認に進みます）: ${String(e).slice(0, 160)}`);
+    }
+  } else if (present.length > 0) {
+    console.log(`Lpro Cookie: プロファイルに残存（${describeCookies(present)}）`);
+  } else {
+    console.log('Lpro Cookie: プロファイルにも退避分にも無し（初回、または退避前に失効）。ログインが必要な見込み');
+  }
+}
+
+/**
+ * Lpro の Cookie を .lpro-session に退避する。「ログイン確認OK」を通ったブラウザの Cookie だけを対象にし、
+ * 内容が前回と同じでファイルも残っていれば何もしない。失敗しても本体の動作は止めない
+ */
+function persistSessionCookies(c: BrowserContext, when: string): Promise<void> {
+  if (!sessionFileSupported()) return Promise.resolve();
+  // ログイン待ち中／未確認のブラウザの Cookie（未認証の JSESSIONID・別アカウント）で有効な退避分を上書きしない
+  if (!sessionVerified || loginWaiting) return Promise.resolve();
+  const run = async (): Promise<void> => {
+    let cs: CookieRec[];
+    try {
+      cs = await Promise.race([
+        lproCookies(c),
+        new Promise<CookieRec[]>((_, rej) => setTimeout(() => rej(new Error('cookies() timeout')), 5_000)),
+      ]);
+    } catch {
+      return; // ブラウザが既に死んでいる等。退避済みの前回分がそのまま残る
+    }
+    if (cs.length === 0) return; // Cookie ゼロ（起動直後など）で前回のログイン済み分を消さない
+    const sig = cookieSignature(cs);
+    // 同じ内容でも、ファイルが消されていれば書き直す（RUNBOOK「消しても次のログイン確認OKで作り直される」を守る）
+    if (sig === lastSavedSig && existsSync(cfg.sessionFile)) return;
+    try {
+      await saveSessionFile(cfg.sessionFile, cs, sessionOwner());
+      lastSavedSig = sig;
+      console.log(`Lpro Cookie を退避しました（${when}: ${describeCookies(cs)}）`);
+    } catch (e) {
+      console.warn(`Lpro Cookie の退避に失敗（${when}）: ${String(e).slice(0, 160)}`);
+    }
+  };
+  saveChain = saveChain.then(run, run);
+  return saveChain;
+}
+
+/** 進行中の退避書き込みが終わるまで待つ（login.ts が「保存しました」と言う前に呼ぶ） */
+export function flushSessionSave(): Promise<void> {
+  return saveChain;
+}
+
 function clean(s: string | null | undefined): string {
   return (s ?? '').trim().replace(/\s+/g, ' ');
 }
@@ -90,8 +206,12 @@ export async function initBrowser(): Promise<void> {
       'TALK_TALK_URL+TALK_GROUP_CHAT_ID を設定してください）。`npm run doctor` で確認できます'
     );
   }
-  // 再初期化（クラッシュ復旧）に備えて既存コンテキストは先に閉じる
-  if (ctx) await closeBrowser();
+  // 再初期化（クラッシュ復旧）に備えて既存コンテキストは先に閉じる。ブラウザ自体が生きていれば
+  // （Page crashed 等）正常 close でセッションCookieが捨てられるので、開き直しと同じく先に退避する
+  if (ctx) {
+    if (sessionVerified && !carriedCookies) await carryCookies(ctx);
+    await closeBrowser();
+  }
   // PM2 restart 直後は、直前まで動いていた chromium がプロファイルのロック（Windows の
   // ProcessSingleton）を解放しきる前に launchPersistentContext が走り、「既存のブラウザ
   // セッションで開いています」で失敗することがある。これを放置すると起動失敗→即再起動→また
@@ -122,26 +242,40 @@ export async function initBrowser(): Promise<void> {
   page = ctx!.pages()[0] ?? (await ctx!.newPage());
   currentInboxId = null;
   generation++;
+  sessionVerified = false; // 新しいブラウザ。ensureLoggedIn が通るまで退避しない
+  // 正常終了→再起動で Chromium が捨てるセッションCookie（JSESSIONID）を、最初のナビゲーションの前に戻す
+  await restoreSessionCookies(ctx!);
   // 最初の受信箱でログイン確認（複数受信箱でもログインは共通のセッション）
   await ensureLoggedIn(inboxes[0]);
 }
 
 /** 終了時に呼ぶ。ブラウザ（永続コンテキスト）を閉じる */
 export async function closeBrowser(): Promise<void> {
+  // 閉じる前に Lpro の Cookie を退避しておく（正常終了で Chromium がセッションCookieを捨てるため）。
+  // 内容が前回退避分と同じなら何もしない。終了処理の猶予（PM2 kill_timeout）を食い潰さないよう上限付き
+  if (ctx) {
+    await Promise.race([
+      persistSessionCookies(ctx, '終了前'),
+      new Promise<void>((r) => setTimeout(r, 6_000)),
+    ]);
+  }
   try { await ctx?.close(); } catch { /* already closed */ }
   ctx = null;
   page = null;
   currentInboxId = null;
+  sessionVerified = false;
 }
 
 /**
  * ブラウザ（chromium）を閉じて開き直す（日次の定期再起動）。長時間稼働で一覧の空振り・検索フォーム待ちの
  * タイムアウトが日を追って増える傾向（2026-08-16〜20、08-30〜09-07 の2期間で観測。9日目で約7倍）を
  * リセットする。★必ず runExclusive 内で呼ぶこと★（巡回・返信と直列化し、送信途中のブラウザを閉じない）。
- * ログインセッションは Cookie としてプロファイルに永続化済みで、閉じて開き直しても維持される
- * （PM2 restart で繰り返し実証済み）。万一失効していれば initBrowser 内の ensureLoggedIn が通常どおり
- * ログイン待ち＋アラートに入る。close が固まっても待ちは有限にし、残存 chromium は強制終了してから
- * 開き直す（ctx を先に手放すので、initBrowser が固まった close を再び待つことはない）。
+ * ★ログインセッション（JSESSIONID）は有効期限なしのセッションCookieで、Chromium は正常終了→再起動で捨てる
+ *   （2026-09-11 09:00 の定期再起動でログアウト→ログイン待ちになった。実験でも再現）。プロファイル任せにせず、
+ *   閉じる前に cookies() で退避し、initBrowser が addCookies() で戻す（src/session.ts）。
+ * Lpro 側で失効していれば initBrowser 内の ensureLoggedIn が通常どおりログイン待ち＋アラートに入る。
+ * close が固まっても待ちは有限にし、残存 chromium は強制終了してから開き直す
+ * （ctx を先に手放すので、initBrowser が固まった close を再び待つことはない）。
  */
 export async function recycleBrowser(shouldAbort: () => boolean = () => false): Promise<void> {
   const old = ctx;
@@ -149,6 +283,10 @@ export async function recycleBrowser(shouldAbort: () => boolean = () => false): 
   page = null;
   currentInboxId = null;
   if (old) {
+    // 閉じる前にログイン Cookie を退避（直後の initBrowser が1回だけ消費する）。取れなければ .lpro-session 頼み
+    await carryCookies(old);
+    sessionVerified = false;
+    console.log(`開き直し前に Lpro Cookie を退避: ${carriedCookies ? describeCookies(carriedCookies) : '取得できず'}`);
     const closed = await Promise.race([
       old.close().then(() => true, () => true),
       new Promise<boolean>((r) => setTimeout(() => r(false), 30_000)),
@@ -159,7 +297,10 @@ export async function recycleBrowser(shouldAbort: () => boolean = () => false): 
     }
   }
   // 閉じている間に終了処理（PM2 stop）が始まっていたら開き直さない（chromium 残骸・不要なログイン待ちを作らない）
-  if (shouldAbort()) return;
+  if (shouldAbort()) {
+    carriedCookies = null;
+    return;
+  }
   await initBrowser();
 }
 
@@ -296,14 +437,23 @@ export async function ensureLoggedIn(inbox: Inbox = inboxes[0]): Promise<void> {
     }
     // ★以前は5分デッドラインで throw していたが、それだと PM2 が即再起動し、開いていた
     //   ログイン用ウィンドウごと消えて 2FA を中断してしまう（＝誰にも通知されない無音クラッシュループ）。
-    //   ヘッドフルなので手動ログインが済むまで待ち続け、運用グループには即時＋定期的にアラートする。
+    //   ヘッドフルなので手動ログインが済むまで待ち続け、運用グループにアラートする
+    //   （通常の未ログインは 20 秒続いてから初回、以後 15 分ごと。別アカウント検出は即時。
+    //   20 秒以内に自己回復した一過性の空振りでは ⚠️ も ✅ も飛ばさない）。
     loginWaiting = true;
+    sessionVerified = false; // ここから先のブラウザの Cookie は未認証（or 別アカウント）なので退避しない
     // アラートの間隔: 通常は15分ごと。別アカウント検出時は（前回から1分以上空いていれば）即時に知らせる。
     // ループの外で持つ＝「別アカウント→ログアウト」を繰り返しても通知が連発しない
     const REALERT_MS = 15 * 60_000;
     const MIN_GAP_MS = 60_000;
+    // 1回目のアラートは少しだけ待つ: 開き直し直後や Lpro の毎時処理中はトーク画面が遅れて出ることがあり、
+    // /manage/ を開き直せば数秒でログイン済みと分かる。その場合は「未ログイン」を運用に飛ばさない
+    // （別アカウント検出は下で即時に倒す）
+    const FIRST_ALERT_GRACE_MS = 20_000;
     let lastAlertAt = 0;
-    let nextAlertAt = 0; // 0 = まず1回目のアラートを即送る
+    // 別アカウント検出は自動ログアウトの成否に依らず即時（誤送信の芽なので猶予を置かない）
+    let nextAlertAt = wrongSite ? 0 : Date.now() + FIRST_ALERT_GRACE_MS;
+    let alerted = false;
     let logoutFailed = initialLogoutFailed;
     try {
       for (;;) {
@@ -345,6 +495,7 @@ export async function ensureLoggedIn(inbox: Inbox = inboxes[0]): Promise<void> {
             } catch { /* 通知失敗で待機を止めない */ }
             lastAlertAt = Date.now();
             nextAlertAt = lastAlertAt + REALERT_MS;
+            alerted = true;
           }
           seen = await p.locator(SELECTORS.loggedInMarker).first().isVisible().catch(() => false);
           if (!seen) await p.waitForTimeout(2000);
@@ -362,9 +513,13 @@ export async function ensureLoggedIn(inbox: Inbox = inboxes[0]): Promise<void> {
     } finally {
       loginWaiting = false;
     }
-    try { loginNotifier?.('recovered'); } catch { /* noop */ }
+    // 「未ログイン」を知らせた場合だけ「復旧」を知らせる（猶予内に自己回復した一過性の空振りでは何も飛ばさない）
+    if (alerted) { try { loginNotifier?.('recovered'); } catch { /* noop */ } }
   }
   console.log(`Lpro ログイン確認OK（${inbox.name}）`);
+  // ログイン済みの Cookie を退避（プロセス再起動をまたいでログインを引き継ぐ）。内容が同じなら書かない
+  sessionVerified = true;
+  void persistSessionCookies(p.context(), 'ログイン確認OK');
 }
 
 /** 行スキャン結果（frame.evaluate で一括抽出）。各顧客の会話履歴（scans）も同時に取る */

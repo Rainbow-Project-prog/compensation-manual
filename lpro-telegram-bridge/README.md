@@ -100,11 +100,11 @@ pm2 save
 
 ```
 lpro-telegram-bridge/
-├─ .env / .lpro-profile/ / bridge.db / backups/     ← 既定案件（最初の案件）。従来どおり・PM2 名 lpro-bridge
+├─ .env / .lpro-profile/ / bridge.db / backups/ / .lpro-session  ← 既定案件（最初の案件）。従来どおり・PM2 名 lpro-bridge
 └─ instances/
    └─ <案件名>/                                    ← 追加案件（案件名は英数字・-・_ のみ）。PM2 名 lpro-bridge-<案件名>
       ├─ .env                                      ← .env.example をコピーして記入（INSTANCE_LABEL に表示名）
-      └─ .lpro-profile/ bridge.db backups/ dump/   ← 自動生成
+      └─ .lpro-profile/ bridge.db backups/ dump/ .lpro-session  ← 自動生成（.lpro-session はログイン Cookie の退避。DPAPI 暗号化）
 ```
 
 - 案件の選択: PM2 は `BRIDGE_INSTANCE=<案件名>`（`ecosystem.config.cjs` が instances/ を見て自動付与。**シェルで手動設定しない**）、

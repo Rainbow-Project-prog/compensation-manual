@@ -1,5 +1,6 @@
 // ★env.js を最初に import する（案件の解決と .env の読み込み。他の import より先）★
 import { instanceId, dataDir, envPath } from './env.js';
+import { join } from 'node:path';
 import { resolveDataPaths } from './paths.js';
 
 // DB・プロファイル・バックアップは案件のデータディレクトリ基準（CWD 非依存）。
@@ -14,6 +15,10 @@ export const cfg = {
   envPath,
   dbPath: paths.dbPath,
   backupDir: paths.backupDir,
+  // Lpro のログイン Cookie（セッションCookie）の退避先。Chromium は正常終了→再起動でセッションCookieを
+  // 捨てるため、プロセス再起動（PM2 stop/start・PC再起動）をまたいでログインを引き継ぐのに使う。
+  // DPAPI（ログオンユーザー鍵）で暗号化して置く。詳細は src/session.ts
+  sessionFile: join(dataDir, '.lpro-session'),
   telegramToken: required('TELEGRAM_BOT_TOKEN'),
   loginUrl: required('LPRO_LOGIN_URL'),
   pollIntervalMs: Math.max(1000, num('POLL_INTERVAL_MS', 8000)),
@@ -50,8 +55,14 @@ export const cfg = {
   // 日次ティックでブラウザ（chromium）を閉じて開き直す。長時間稼働で一覧の空振り・検索フォーム待ちの
   // タイムアウト（「一覧に行が1件もありません」「検索フォームが現れません」）が日を追って増える傾向が
   // 2つの稼働期間（2026-08-16〜20、08-30〜09-07: 9日目で初日の約7倍）で観測されたため、1日1回リセットする。
-  // ログインセッションは Cookie としてプロファイルに永続化されており、閉じて開き直しても維持される。
+  // ★ログインセッション（JSESSIONID）は有効期限なしのセッションCookieで、Chromium は正常終了→再起動で
+  //   これを捨てる（2026-09-11 の定期再起動でログアウト→ログイン待ちになった）。開き直しの前後で
+  //   cookies()/addCookies() により明示的に引き継ぐ（lpro-adapter.recycleBrowser / src/session.ts）。
   dailyBrowserRecycle: (process.env.DAILY_BROWSER_RECYCLE ?? 'true') === 'true',
+  // 日次ティック（💓）からブラウザ開き直しまでの遅延（分）。Lpro は毎時 0〜7 分台に一過性エラー
+  // （検索フォーム未出現・一覧0件）が集中する（サーバー側の毎時処理と見られる）。💓は 9:00 ちょうどに
+  // 送るが、開き直し直後のログイン確認をその時間帯にぶつけると「未ログイン」と誤判定しやすいので外す
+  dailyRecycleDelayMs: Math.max(0, num('DAILY_RECYCLE_DELAY_MIN', 10)) * 60_000,
 };
 
 /**

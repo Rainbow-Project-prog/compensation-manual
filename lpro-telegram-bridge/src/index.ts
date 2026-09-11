@@ -501,19 +501,31 @@ async function dailyTick(): Promise<void> {
   stats.listFail = 0;
   stats.convFail = 0;
   // ハートビート（生存契約）を送ってからブラウザを開き直す。順序が逆だと、開き直しがログイン待ちに
-  // 入ったとき💓が届かず「停止」と誤認される。排他区間の待ちでこの関数を塞がないよう fire-and-forget
-  // （巡回・返信とは runExclusive で直列化される）。ログイン待ち中は開き直さない（待ちの後ろに並ぶだけで無意味）
-  if (cfg.dailyBrowserRecycle && !shuttingDown && !recycling && !isLoginWaiting()) {
-    recycling = true;
-    console.log('ブラウザを定期再起動します（長時間稼働の描画遅延をリセット）…');
-    void runExclusive(() => recycleBrowser(() => shuttingDown))
-      .then(() => console.log('ブラウザの定期再起動が完了しました'))
-      // 致命ではない: 次の巡回が isBrowserGoneError / pageGone 経路で initBrowser を再試行する
-      .catch((e) => console.error('ブラウザの定期再起動に失敗（次の巡回で復旧を試みます）:', String(e).slice(0, 200)))
-      .finally(() => { recycling = false; });
-  } else if (cfg.dailyBrowserRecycle && isLoginWaiting()) {
-    console.log('ログイン待ち中のためブラウザの定期再起動を見送ります');
+  // 入ったとき💓が届かず「停止」と誤認される。開き直しは DAILY_RECYCLE_DELAY_MIN 分後に予約する:
+  // Lpro は毎時 0〜7 分台に一過性エラー（検索フォーム未出現・一覧0件）が集中するので、開き直し直後の
+  // ログイン確認をその時間帯にぶつけない（2026-09-11 の定期再起動は 09:00 ちょうどに走っていた）
+  if (cfg.dailyBrowserRecycle && !shuttingDown) {
+    const min = Math.round(cfg.dailyRecycleDelayMs / 60_000);
+    if (min > 0) console.log(`ブラウザの定期再起動を ${min} 分後に予約しました（毎時0分台の Lpro 不安定時間帯を避ける）`);
+    setTimeout(() => { void recycleBrowserNow(); }, cfg.dailyRecycleDelayMs);
   }
+}
+
+/** 日次のブラウザ開き直し本体。排他区間の待ちで呼び出し元を塞がないよう fire-and-forget
+ * （巡回・返信とは runExclusive で直列化される）。ログイン待ち中は開き直さない（待ちの後ろに並ぶだけで無意味） */
+async function recycleBrowserNow(): Promise<void> {
+  if (shuttingDown || recycling) return;
+  if (isLoginWaiting()) {
+    console.log('ログイン待ち中のためブラウザの定期再起動を見送ります');
+    return;
+  }
+  recycling = true;
+  console.log('ブラウザを定期再起動します（長時間稼働の描画遅延をリセット）…');
+  await runExclusive(() => recycleBrowser(() => shuttingDown))
+    .then(() => console.log('ブラウザの定期再起動が完了しました'))
+    // 致命ではない: 次の巡回が isBrowserGoneError / pageGone 経路で initBrowser を再試行する
+    .catch((e) => console.error('ブラウザの定期再起動に失敗（次の巡回で復旧を試みます）:', String(e).slice(0, 200)))
+    .finally(() => { recycling = false; });
 }
 
 function scheduleDailyTick(): void {
