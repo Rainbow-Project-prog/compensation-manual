@@ -2,7 +2,8 @@ import { cfg, inboxes, inboxById, type Inbox } from './config.js';
 import { dbApi, closeDb } from './db.js';
 import { runExclusive, drainQueue } from './queue.js';
 import {
-  decideDeliveryBySeen, packDeliveryChunks, splitSelfDelivery, chunkIsSelfOnly, decideMarkerTransitions, type MarkerState,
+  decideDeliveryBySeen, packDeliveryChunks, splitSelfDelivery, splitRuns, buildSelfBlockText, packSelfBlocks,
+  selfBlockPlaceholder, decideMarkerTransitions, type MarkerState,
 } from './logic.js';
 import { runBackup } from './backup.js';
 import { runDoctor, printResult } from './preflight.js';
@@ -13,7 +14,8 @@ import {
   pollConversations, readInbound, sendReply, pollHitLimit, pollHitLimitFor, listAllMemberIds, type Conversation,
 } from './lpro-adapter.js';
 import {
-  startBot, stopBot, setReplyHandler, ensureTopic, pushInbound, reopenTopic, renameTopic, retryAfterMs,
+  startBot, stopBot, setReplyHandler, ensureTopic, pushInbound, editTopicMessage, isBadRequestError, reopenTopic, renameTopic,
+  retryAfterMs,
   notifyOps, isThreadNotFoundError, isTopicClosedError, isTelegramError,
 } from './telegram.js';
 
@@ -190,7 +192,7 @@ async function processConversation(inbox: Inbox, conv: Conversation): Promise<nu
   // 自分側発言の扱い（MIRROR_SELF。config.ts 参照）:
   //  - silent（既定）/ notify: 自分側（一斉配信・自動応答・PC直返信）も流す。ただし自送信の逆流（Telegram経由で
   //    送った返信が自分側吹き出しとして再出現）は配信せず既知化のみ。PC で直接 L-Pro に打った返信は控えに無いので
-  //    そのまま流れる＝双方向にリンク。silent では自分側だけのチャンクをサイレント送信し、顧客の発言だけが通知で鳴る
+  //    そのまま流れる＝双方向にリンク。silent では自分側を追記ブロックへ編集で載せ（未読・通知なし）、顧客の発言だけが鳴る
   //  - off: 自分側は配信せず既知化だけ。自分側しか新着が無い顧客はトピックも作らない
   const toDeliver = splitSelfDelivery(deliver, cfg.selfMode !== 'off', (m) => consumeSentEcho(key, m.text));
   for (const m of deliver) if (!toDeliver.includes(m)) dbApi.addSeen(key, m.hash);
@@ -201,35 +203,80 @@ async function processConversation(inbox: Inbox, conv: Conversation): Promise<nu
     const threadId = await ensureTopic(
       key, markerName(initialMarker, conv.name, conv.memberId), inbox.groupChatId, initialMarker
     );
-    // 大量配信（新規顧客の履歴一括など）を1件1通で送ると Telegram のレート制限(429)を連発する
-    // ため、まとまっている場合だけ複数件を1通に連結して通数を減らす。通常の新着は従来どおり1件1通。
-    // 自分側発言はラベルを付けて顧客の発言と区別する
-    const chunks = packDeliveryChunks(
-      toDeliver,
-      (m) => (m.self ? SELF_PREFIX + m.text : m.text),
-      { sep: '\n──────\n' }
-    );
-    for (const chunk of chunks) {
-      // 自分側だけのチャンクはサイレント送信（トピックには入るが音・バイブなし）。顧客の発言を含むチャンクは通常通知
-      const silent = cfg.selfMode === 'silent' && chunkIsSelfOnly(chunk.hashes, toDeliver);
+    // トピックが閉じられていれば開き直して1回だけやり直す。削除されていれば紐付けを外して次回作り直す
+    const withTopicRecovery = async <T>(fn: () => Promise<T>): Promise<T> => {
       try {
-        await pushInbound(inbox.groupChatId, threadId, chunk.text, { silent });
+        return await fn();
       } catch (e) {
         if (isTopicClosedError(e)) {
           console.warn(`[${inbox.name}] トピックが閉じられています。開き直します: ${conv.name}`);
           await reopenTopic(inbox.groupChatId, threadId);
-          await pushInbound(inbox.groupChatId, threadId, chunk.text, { silent });
-        } else if (isThreadNotFoundError(e)) {
+          return await fn();
+        }
+        if (isThreadNotFoundError(e)) {
           console.warn(`[${inbox.name}] トピックが削除されています。次回作り直します: ${conv.name}`);
           dbApi.clearTopic(key);
-          throw e;
+        }
+        throw e;
+      }
+    };
+    const sep = '\n──────\n';
+    // 顧客の発言の直後に添える空の追記ブロック（プレースホルダ）。顧客の発言でトピックが未読になる同じタイミングで
+    // 1通増える（未読は顧客発言と合わせて2つ。開けば両方消える）代わりに、以後の配信・返信はここへ編集で追記され
+    // 新しい未読・通知を作らない。トピック一覧のプレビューはこのブロックになるため、見出しに顧客発言の抜粋を添える
+    const placePlaceholder = async (customerText: string): Promise<void> => {
+      const text = selfBlockPlaceholder(customerText);
+      const id = await withTopicRecovery(() => pushInbound(inbox.groupChatId, threadId, text, { silent: true }));
+      if (id) dbApi.setSelfBlock(key, id, text);
+    };
+    if (cfg.selfMode === 'silent' && !bootstrap) {
+      // 増分配信: 顧客側は通常のメッセージ（通知あり）。自分側は「追記ブロック」に編集で載せる（未読を増やさない）。
+      // 順序を保つため run（顧客側の連続／自分側の連続）ごとに処理する
+      let needPlaceholder = false;
+      let lastCustomerText = '';
+      let selfError: unknown = null;
+      for (const run of splitRuns(toDeliver)) {
+        if (!run.self) {
+          for (const chunk of packDeliveryChunks(run.msgs, (m) => m.text, { sep })) {
+            await withTopicRecovery(() => pushInbound(inbox.groupChatId, threadId, chunk.text));
+            stats.delivered++;
+            // チャンク成功ごとに既知化: 途中で失敗しても、送信済みチャンク分を次回に再配信しない
+            for (const h of chunk.hashes) dbApi.addSeen(key, h);
+          }
+          // 顧客の発言より後の自分側発言は新しいブロックに載せる（時系列を崩さない）
+          dbApi.clearSelfBlock(key);
+          needPlaceholder = true;
+          lastCustomerText = run.msgs[run.msgs.length - 1].text;
         } else {
-          throw e;
+          // 自分側の失敗で後続の顧客側 run を道連れにしない（顧客の発言が窓外へ流れて取りこぼす恐れ）。
+          // 顧客側を先に片付け、自分側は末尾で throw して次サイクルに回す（既知化していないので再試行される）
+          try {
+            await appendSelfBlock(key, inbox.groupChatId, threadId, run.msgs, withTopicRecovery);
+            needPlaceholder = false; // 直前に作った/追記したブロックが次の追記先になる
+          } catch (e) {
+            selfError = e;
+            console.warn(`[${inbox.name}] 自分側発言の追記に失敗（顧客側の配信は続行・次サイクルで再試行）: ${String(e).slice(0, 160)}`);
+          }
         }
       }
-      stats.delivered++;
-      // チャンク成功ごとに既知化: 途中で失敗しても、送信済みチャンク分を次回に再配信しない
-      for (const h of chunk.hashes) dbApi.addSeen(key, h);
+      if (needPlaceholder) await placePlaceholder(lastCustomerText);
+      if (selfError) throw selfError;
+    } else {
+      // 初遭遇（bootstrap）と notify モード: 従来どおり全体を連結チャンクで流す（履歴一括の 429 対策。初遭遇は
+      // トピック自体が新規＝どのみち未読なので「未読を増やさない」要件に影響しない）。silent では自分側だけの
+      // チャンクをサイレント送信し、最後に追記用の空ブロックを添えて以後の配信に備える
+      const selfHashes = new Set(toDeliver.filter((m) => m.self).map((m) => m.hash));
+      const chunks = packDeliveryChunks(toDeliver, (m) => (m.self ? SELF_PREFIX + m.text : m.text), { sep });
+      for (const chunk of chunks) {
+        const silent = cfg.selfMode === 'silent' && chunk.hashes.every((h) => selfHashes.has(h));
+        await withTopicRecovery(() => pushInbound(inbox.groupChatId, threadId, chunk.text, { silent }));
+        stats.delivered++;
+        for (const h of chunk.hashes) dbApi.addSeen(key, h);
+      }
+      if (cfg.selfMode === 'silent') {
+        const lastCustomer = [...toDeliver].reverse().find((m) => !m.self);
+        await placePlaceholder(lastCustomer?.text ?? '');
+      }
     }
   }
   if (!bootstrap) {
@@ -238,6 +285,56 @@ async function processConversation(inbox: Inbox, conv: Conversation): Promise<nu
   }
   dbApi.pruneSeen(key);
   return inbound.length;
+}
+
+/**
+ * 自分側（L-Pro 側）発言を追記ブロックへ載せる。現在のブロックがあり上限内なら編集で追記（未読を増やさない）。
+ * 無い／編集できない／上限超過なら新しいブロックをサイレント送信で作る（この場合だけ未読が1つ増える。
+ * 顧客の発言直後に空ブロックを添えている限り、ここに来るのはブロックが溢れたとき等に限られる）。
+ * 既知化（addSeen）は載せ終わってから行う（失敗時は次回やり直し）
+ */
+async function appendSelfBlock(
+  key: string,
+  groupChatId: number,
+  threadId: number,
+  msgs: Array<{ text: string; hash: string; dt?: string }>,
+  withTopicRecovery: <T>(fn: () => Promise<T>) => Promise<T>
+): Promise<void> {
+  const entries = msgs.map((m) => ({ text: m.text, dt: m.dt }));
+  const cust = dbApi.get(key);
+  const existing = cust?.self_block_msg_id && cust.topic_thread_id === threadId
+    ? { id: cust.self_block_msg_id, text: cust.self_block_text ?? '' }
+    : null;
+  // 上限に収まる単位に詰める（超えた分は次のブロック）。既存ブロックへの追記は編集、それ以外はサイレント新規送信
+  for (const plan of packSelfBlocks(existing?.text ?? null, entries)) {
+    // 既存ブロックへの追記が編集できなかった場合に使う「この分だけの新ブロック」本文
+    const freshText = plan.extendsExisting ? buildSelfBlockText(null, plan.entries.map((i) => entries[i])) : plan.text;
+    let msgId: number | null = null;
+    let finalText = plan.text;
+    if (plan.extendsExisting && existing) {
+      const ok = await withTopicRecovery(() => editTopicMessage(groupChatId, existing.id, plan.text));
+      if (ok) msgId = existing.id;
+      else console.warn(`追記ブロックを編集できないため新しいブロックを作ります: ${key}`);
+    }
+    if (msgId === null) {
+      finalText = freshText;
+      try {
+        msgId = await withTopicRecovery(() => pushInbound(groupChatId, threadId, freshText, { silent: true }));
+      } catch (e) {
+        // 内容起因の 400 は何度やっても通らない。既知化して先へ進む（毎サイクル同じ失敗で他の配信を塞がない）
+        if (isBadRequestError(e)) {
+          console.warn(`追記ブロックの送信が拒否されました。この分は既知化してスキップします: ${String(e).slice(0, 160)}`);
+          for (const i of plan.entries) dbApi.addSeen(key, msgs[i].hash);
+          continue;
+        }
+        throw e;
+      }
+    }
+    // 注: 編集が Telegram 側で反映されたのに応答喪失で throw した場合、DB 本文が古いまま次回全文上書きされ、
+    // 窓外へ流れた自分側発言がブロックから消え得る（自分側のみ・極低頻度。顧客の発言には影響しない）
+    if (msgId) dbApi.setSelfBlock(key, msgId, finalText);
+    for (const i of plan.entries) dbApi.addSeen(key, msgs[i].hash);
+  }
 }
 
 // 無音障害の自己申告用カウンタ
@@ -636,6 +733,10 @@ async function main(): Promise<void> {
         dbApi.deletePending(pendingId);
         // この返信は次の読取で自分側吹き出しとして逆流する。二重表示を避けるため控えておく
         recordSentEcho(key, text);
+        // オペレーターの返信より後の L-Pro 側発言（自動応答など）は、返信の上にある追記ブロックへ載せると
+        // 時系列が前後して読みにくい。次の自分側発言は返信の下に新しいブロックを作る（返信者はこの会話を見ているので
+        // サイレントの未読1つは許容）
+        dbApi.clearSelfBlock(key);
         // オペレーターの返信＝実活動。再同期の対象に含める（PC直返信の反映にも効く）
         dbApi.touchActivity(key);
         clearResyncBackoff(key);

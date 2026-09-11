@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  decideDeliveryBySeen, packDeliveryChunks, splitSelfDelivery, chunkIsSelfOnly, toConvMessages, type FpMsg, type ScanMsg,
+  decideDeliveryBySeen, packDeliveryChunks, splitSelfDelivery, splitRuns, buildSelfBlockText, packSelfBlocks, safeSlice,
+  selfBlockHeader, selfBlockPlaceholder, SELF_BLOCK_HEADER, SELF_BLOCK_PLACEHOLDER_LINE, SELF_BLOCK_MAX,
+  toConvMessages, type FpMsg, type ScanMsg,
 } from '../src/logic.js';
 
 const msg = (h: string): FpMsg => ({ text: `本文${h}`, hash: h });
@@ -277,10 +279,79 @@ test('自分側しか無ければ MIRROR_SELF=false で配信ゼロ（トピッ�
   assert.deepEqual(out, []);
 });
 
-test('chunkIsSelfOnly: 自分側だけなら true、顧客を1件でも含めば false、空は false', () => {
-  const msgs = [{ hash: 'a', self: false }, { hash: 'b', self: true }, { hash: 'c', self: true }];
-  assert.equal(chunkIsSelfOnly(['b', 'c'], msgs), true);
-  assert.equal(chunkIsSelfOnly(['a', 'b'], msgs), false);
-  assert.equal(chunkIsSelfOnly(['x'], msgs), false); // 不明ハッシュは自分側と断定しない
-  assert.equal(chunkIsSelfOnly([], msgs), false);
+// --- 追記ブロック（自分側発言を編集で載せて未読を増やさない）---
+
+test('splitRuns: 顧客側/自分側の連続で分け、順序を保つ', () => {
+  const runs = splitRuns([
+    { self: false, h: 1 }, { self: false, h: 2 }, { self: true, h: 3 }, { self: false, h: 4 }, { self: true, h: 5 }, { self: true, h: 6 },
+  ]);
+  assert.deepEqual(
+    runs.map((r) => [r.self, r.msgs.map((m) => m.h)]),
+    [[false, [1, 2]], [true, [3]], [false, [4]], [true, [5, 6]]]
+  );
+  assert.deepEqual(splitRuns([]), []);
+});
+
+test('buildSelfBlockText: 空/プレースホルダからは見出しで作り直し、既存本文には追記する', () => {
+  const t1 = buildSelfBlockText(null, [{ text: '配信A', dt: '09/12 09:00' }]);
+  assert.equal(t1, `${SELF_BLOCK_HEADER}\n──\n[09/12 09:00] 配信A`);
+  // 顧客抜粋付きのプレースホルダ → 見出し行は残し、プレースホルダ行だけ外して追記
+  const ph = selfBlockPlaceholder('先日の件、まだ迷っています。');
+  assert.ok(ph.endsWith(`\n${SELF_BLOCK_PLACEHOLDER_LINE}`));
+  const t2 = buildSelfBlockText(ph, [{ text: '配信A' }]);
+  assert.equal(t2, `${selfBlockHeader('先日の件、まだ迷っています。')}\n──\n配信A`);
+  assert.ok(!t2.includes(SELF_BLOCK_PLACEHOLDER_LINE));
+  const t3 = buildSelfBlockText(t2, [{ text: '返信B', dt: 'x' }, { text: '配信C' }]);
+  assert.equal(t3, `${t2}\n──\n[x] 返信B\n──\n配信C`);
+});
+
+test('selfBlockHeader: 顧客発言の抜粋を40字で切り、改行は潰す。空なら見出しのみ', () => {
+  assert.equal(selfBlockHeader(''), SELF_BLOCK_HEADER);
+  assert.equal(selfBlockHeader('  こんにちは\nよろしく '), `${SELF_BLOCK_HEADER} ← 「こんにちは よろしく」`);
+  const long = 'あ'.repeat(50);
+  assert.equal(selfBlockHeader(long), `${SELF_BLOCK_HEADER} ← 「${'あ'.repeat(40)}…」`);
+});
+
+test('safeSlice: サロゲートペア（絵文字）を境界で割らない', () => {
+  const s = 'a'.repeat(9) + '😀' + 'b';
+  assert.equal(safeSlice(s, 10), 'a'.repeat(9)); // 10文字目が絵文字の前半 → 1つ手前で切る
+  assert.equal(safeSlice(s, 11), 'a'.repeat(9) + '😀');
+  assert.equal(safeSlice('abc', 10), 'abc');
+});
+
+test('buildSelfBlockText: 1件が長すぎる場合は省略して上限に収める', () => {
+  const t = buildSelfBlockText(null, [{ text: 'あ'.repeat(5000) }]);
+  assert.ok(t.length < SELF_BLOCK_MAX);
+  assert.ok(t.includes('省略'));
+});
+
+test('packSelfBlocks: 収まるなら既存ブロックへの追記1件、超えたら次のブロックへ分割し全件が載る', () => {
+  const e = (n: number) => ({ text: 'x'.repeat(n) });
+  const one = packSelfBlocks(`${SELF_BLOCK_HEADER}\n──\n既存`, [e(10), e(20)]);
+  assert.equal(one.length, 1);
+  assert.equal(one[0].extendsExisting, true);
+  assert.deepEqual(one[0].entries, [0, 1]);
+  assert.ok(one[0].text.startsWith(`${SELF_BLOCK_HEADER}\n──\n既存`));
+  // 3000字×2 は 1ブロックに収まらない → 2ブロック（先頭は既存への追記、次は新規）
+  const two = packSelfBlocks(null, [e(3000), e(3000)]);
+  assert.equal(two.length, 2);
+  assert.deepEqual(two.map((p) => p.entries), [[0], [1]]);
+  assert.equal(two[0].extendsExisting, false);
+  assert.ok(two.every((p) => p.text.length <= SELF_BLOCK_MAX));
+  assert.ok(two[1].text.includes('x'.repeat(3000)));
+});
+
+test('packSelfBlocks: 既存ブロックに1件も入らなければ既存は触らず新ブロックから始める', () => {
+  const existing = `${SELF_BLOCK_HEADER}\n──\n${'y'.repeat(3700)}`;
+  const plans = packSelfBlocks(existing, [{ text: 'z'.repeat(500) }]);
+  assert.equal(plans.length, 1);
+  assert.equal(plans[0].extendsExisting, false);
+  assert.ok(!plans[0].text.includes('y'));
+  assert.deepEqual(plans[0].entries, [0]);
+});
+
+test('toConvMessages: dt を持ち回る（ハッシュ式は不変）', () => {
+  const msgs = toConvMessages('talk', '1', [{ inbound: false, text: '配信', dt: '09/12 09:00', hasImage: false }]);
+  assert.equal(msgs[0].dt, '09/12 09:00');
+  assert.equal(msgs[0].self, true);
 });

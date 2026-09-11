@@ -135,17 +135,114 @@ export function splitSelfDelivery<T extends { self: boolean }>(
   });
 }
 
-/** チャンク（ハッシュ列）が自分側発言だけで構成されているか（サイレント送信の判定。純関数）。
- * 顧客の発言を1件でも含むチャンクは通常通知にする（空チャンクは false） */
-export function chunkIsSelfOnly(hashes: string[], msgs: Array<{ hash: string; self: boolean }>): boolean {
-  const selfByHash = new Map(msgs.map((m) => [m.hash, m.self] as const));
-  return hashes.length > 0 && hashes.every((h) => selfByHash.get(h) === true);
+/** 配信列を「顧客側の連続」「自分側の連続」の run に分ける（順序維持・純関数）。
+ * 顧客側は通常のメッセージとして送り、自分側は追記ブロックへ編集で載せる、の振り分け単位 */
+export function splitRuns<T extends { self: boolean }>(msgs: T[]): Array<{ self: boolean; msgs: T[] }> {
+  const runs: Array<{ self: boolean; msgs: T[] }> = [];
+  for (const m of msgs) {
+    const last = runs[runs.length - 1];
+    if (last && last.self === m.self) last.msgs.push(m);
+    else runs.push({ self: m.self, msgs: [m] });
+  }
+  return runs;
+}
+
+// ── 自分側（L-Pro 側）発言の「追記ブロック」──
+// Telegram は新しいメッセージを投稿すると必ず未読（バッジ）が増えるが、既存メッセージの編集は未読を増やさない。
+// そこで自分側の発言（一斉配信・自動応答・PC直返信）は新規投稿せず、トピック内の1つのメッセージ（追記ブロック）に
+// 編集で追記する。顧客の発言を届けた直後に空の追記ブロックを添えておけば（その時点でトピックは既に未読）、
+// 以後の配信は何回来ても未読を増やさず、トピックを開けば前後のやり取りが時系列で読める。
+export const SELF_BLOCK_HEADER = '🔷 L-Pro側（配信・返信）';
+/** 空ブロック（プレースホルダ）の2行目。追記時にはこの行を外して本文を積む */
+export const SELF_BLOCK_PLACEHOLDER_LINE = '（配信・返信はここに追記されます）';
+/** 追記ブロックの上限文字数（Telegram の 4096 に余裕を持たせる）。超えたら新しいブロックを作る */
+export const SELF_BLOCK_MAX = 3800;
+const SELF_ENTRY_MAX = 3000;
+const EXCERPT_MAX = 40;
+
+/** UTF-16 のサロゲートペア（絵文字等）を境界で割らない slice（割ると Telegram が 400 を返し得る） */
+export function safeSlice(text: string, n: number): string {
+  if (text.length <= n) return text;
+  let end = n;
+  const c = text.charCodeAt(end - 1);
+  if (c >= 0xd800 && c <= 0xdbff) end--;
+  return text.slice(0, end);
+}
+
+/** 追記ブロックの見出し。直前の顧客発言の抜粋を添える（トピック一覧のプレビューが常にこのブロックになるため、
+ * 一覧を眺めるだけで「誰が何と言った件か」が分かるように） */
+export function selfBlockHeader(customerExcerpt?: string): string {
+  const t = (customerExcerpt ?? '').replace(/\s+/g, ' ').trim();
+  if (!t) return SELF_BLOCK_HEADER;
+  const ex = safeSlice(t, EXCERPT_MAX);
+  return `${SELF_BLOCK_HEADER} ← 「${ex}${ex.length < t.length ? '…' : ''}」`;
+}
+
+/** 顧客の発言の直後に添える空ブロック本文 */
+export function selfBlockPlaceholder(customerExcerpt?: string): string {
+  return `${selfBlockHeader(customerExcerpt)}\n${SELF_BLOCK_PLACEHOLDER_LINE}`;
+}
+
+/** 既存ブロック本文を「追記の土台」に正規化する: null/空→見出しのみ、プレースホルダ→見出し行のみ、それ以外→そのまま */
+function selfBlockBase(existing: string | null): string {
+  const t = (existing ?? '').trim();
+  if (t === '') return SELF_BLOCK_HEADER;
+  const lines = t.split('\n');
+  if (lines.length === 2 && lines[1].trim() === SELF_BLOCK_PLACEHOLDER_LINE) return lines[0];
+  return t;
+}
+
+function selfEntryLine(e: { text: string; dt?: string }): string {
+  const body = e.text.length > SELF_ENTRY_MAX
+    ? `${safeSlice(e.text, SELF_ENTRY_MAX)}…（長文のため省略。Lproで確認してください）`
+    : e.text;
+  return `\n──\n${e.dt ? `[${e.dt}] ` : ''}${body}`;
+}
+
+/** 追記ブロックの本文を作る（純関数）。existing が null/空/プレースホルダなら見出しから作り直す */
+export function buildSelfBlockText(existing: string | null, entries: Array<{ text: string; dt?: string }>): string {
+  let text = selfBlockBase(existing);
+  for (const e of entries) text += selfEntryLine(e);
+  return text;
+}
+
+export type SelfBlockPlan = { text: string; entries: number[]; extendsExisting: boolean };
+
+/**
+ * 自分側発言の列を、上限（max）に収まるブロック単位に詰める（純関数。packDeliveryChunks と同じ発想）。
+ *   - 最初のブロックは既存ブロック（existing）への追記として組む（extendsExisting=true。編集で載せる）
+ *   - 収まらなくなったら次のブロック（見出しから・extendsExisting=false。サイレント新規送信）
+ *   - 1件がそれ自体で上限を超える場合は selfEntryLine で省略済みなので単独ブロックには必ず収まる
+ * entries[i] は元配列の添字。呼び出し側はブロック送信成功ごとにその添字分だけ既知化する
+ */
+export function packSelfBlocks(
+  existing: string | null,
+  entries: Array<{ text: string; dt?: string }>,
+  max: number = SELF_BLOCK_MAX
+): SelfBlockPlan[] {
+  const plans: SelfBlockPlan[] = [];
+  const hasExisting = (existing ?? '').trim() !== '';
+  let cur: SelfBlockPlan = { text: selfBlockBase(existing), entries: [], extendsExisting: hasExisting };
+  for (let i = 0; i < entries.length; i++) {
+    const line = selfEntryLine(entries[i]);
+    if (cur.text.length + line.length > max && cur.entries.length > 0) {
+      plans.push(cur);
+      cur = { text: SELF_BLOCK_HEADER, entries: [], extendsExisting: false };
+    } else if (cur.text.length + line.length > max && cur.extendsExisting) {
+      // 既存ブロックには1件も入らない → 既存はそのまま残し、新ブロックから始める
+      cur = { text: SELF_BLOCK_HEADER, entries: [], extendsExisting: false };
+    }
+    cur.text += line;
+    cur.entries.push(i);
+  }
+  if (cur.entries.length > 0) plans.push(cur);
+  return plans;
 }
 
 /** 生スキャン1件（lpro-adapter が行の DOM から抽出）。inbound=true は顧客側（.mb_M.left）。 */
 export type ScanMsg = { inbound: boolean; text: string; dt: string; hasImage: boolean };
 /** フィンガープリント付き会話メッセージ。self=true は自分側（オペレーター/自動応答）の発言。 */
-export type ConvMsg = { text: string; hash: string; self: boolean };
+export type ConvMsg = { text: string; hash: string; self: boolean; dt?: string };
 
 /**
  * 生スキャン（実DOMは新→旧順）→ フィンガープリント付き会話メッセージ（時系列昇順）。
@@ -167,7 +264,7 @@ export function toConvMessages(inboxId: string, memberId: string, scans: ScanMsg
     const base = createHash('sha1').update(material).digest('hex');
     const n = dup.get(base) ?? 0;
     dup.set(base, n + 1);
-    res.push({ text, hash: n === 0 ? base : `${base}:${n}`, self });
+    res.push({ text, hash: n === 0 ? base : `${base}:${n}`, self, dt: m.dt || undefined });
   }
   return res;
 }

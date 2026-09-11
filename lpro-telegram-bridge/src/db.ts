@@ -63,6 +63,10 @@ try { db.exec('ALTER TABLE customers ADD COLUMN last_activity INTEGER'); } catch
 // Telegram トピック名に表示中のステータスマーカー（'pending'=🔴未対応 / 'done'=✅対応済み / NULL=未付与）。
 // L-Pro の henshin を正としたミラー。遷移時だけ editForumTopic を叩くための現在値
 try { db.exec('ALTER TABLE customers ADD COLUMN tg_marker TEXT'); } catch { /* already exists */ }
+// 自分側（L-Pro 側）発言の追記ブロック（トピック内の1メッセージに編集で追記し、未読を増やさない。logic.ts 参照）。
+// self_block_msg_id=現在追記中の Telegram メッセージID / self_block_text=その現在本文（編集は全文を送るため控える）
+try { db.exec('ALTER TABLE customers ADD COLUMN self_block_msg_id INTEGER'); } catch { /* already exists */ }
+try { db.exec('ALTER TABLE customers ADD COLUMN self_block_text TEXT'); } catch { /* already exists */ }
 
 export type Customer = {
   customer_key: string;
@@ -74,6 +78,8 @@ export type Customer = {
   self_seeded: number;
   last_activity: number | null;
   tg_marker: string | null;
+  self_block_msg_id: number | null;
+  self_block_text: string | null;
 };
 
 export const dbApi = {
@@ -92,9 +98,14 @@ export const dbApi = {
        ON CONFLICT(customer_key) DO UPDATE SET topic_thread_id=excluded.topic_thread_id,
          group_chat_id=excluded.group_chat_id`
     ).run(key, threadId, groupChatId, Date.now()),
-  // トピックが削除されていた場合に紐付けを外す（次回配信時に作り直す）
+  // トピックが削除されていた場合に紐付けを外す（次回配信時に作り直す）。追記ブロックも一緒に外す
   clearTopic: (key: string) =>
-    db.prepare('UPDATE customers SET topic_thread_id=NULL WHERE customer_key=?').run(key),
+    db.prepare('UPDATE customers SET topic_thread_id=NULL, self_block_msg_id=NULL, self_block_text=NULL WHERE customer_key=?').run(key),
+  // 自分側発言の追記ブロック（現在追記中のメッセージIDと本文）
+  setSelfBlock: (key: string, msgId: number, text: string) =>
+    db.prepare('UPDATE customers SET self_block_msg_id=?, self_block_text=? WHERE customer_key=?').run(msgId, text, key),
+  clearSelfBlock: (key: string) =>
+    db.prepare('UPDATE customers SET self_block_msg_id=NULL, self_block_text=NULL WHERE customer_key=?').run(key),
   setSeen: (key: string, count: number, bootstrapped = 1) =>
     db.prepare('UPDATE customers SET seen_count=?, bootstrapped=? WHERE customer_key=?')
       .run(count, bootstrapped, key),
@@ -141,7 +152,7 @@ export const dbApi = {
     ).run(key, value),
   // 指定グループに紐付いたトピックだけリセット（そのグループの GROUP_CHAT_ID 変更時）
   clearTopicsByGroup: (groupChatId: number) =>
-    db.prepare('UPDATE customers SET topic_thread_id=NULL WHERE group_chat_id=?').run(groupChatId),
+    db.prepare('UPDATE customers SET topic_thread_id=NULL, self_block_msg_id=NULL, self_block_text=NULL WHERE group_chat_id=?').run(groupChatId),
   // ── フィンガープリント台帳 ──
   hasSeen: (key: string, hash: string) =>
     db.prepare('SELECT 1 FROM seen_messages WHERE customer_key=? AND hash=?').get(key, hash) !== undefined,

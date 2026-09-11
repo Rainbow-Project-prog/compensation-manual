@@ -122,20 +122,50 @@ export async function pushInbound(
   threadId: number,
   text: string,
   opts: { silent?: boolean } = {}
-): Promise<void> {
-  if (!text) return; // 空文字は Telegram が 400 で拒否する
+): Promise<number | null> {
+  if (!text) return null; // 空文字は Telegram が 400 で拒否する
   const CHUNK = 4000;
   let i = 0;
+  let lastId: number | null = null;
   while (i < text.length) {
     let end = Math.min(i + CHUNK, text.length);
     // サロゲートペア（絵文字等）を境界で割ると文字化け・最悪 400 になるため1つ手前で切る
     const c = text.charCodeAt(end - 1);
     if (end < text.length && c >= 0xd800 && c <= 0xdbff) end--;
     const part = text.slice(i, end);
-    await withRetry('sendMessage', () =>
+    const sent = await withRetry('sendMessage', () =>
       bot.api.sendMessage(groupChatId, part, { message_thread_id: threadId, disable_notification: opts.silent === true }));
+    lastId = sent.message_id;
     i = end;
   }
+  return lastId;
+}
+
+/**
+ * トピック内の既存メッセージ（自分側発言の追記ブロック）を編集する。編集は未読・通知を発生させない。
+ * 戻り値 true=編集できた（内容同一も含む）/ false=そのメッセージはもう編集できない（削除済み・編集不可）
+ * → 呼び出し側が新しいブロックを作る。それ以外（429/5xx/TOPIC_CLOSED 等）は throw
+ */
+export async function editTopicMessage(groupChatId: number, messageId: number, text: string): Promise<boolean> {
+  try {
+    await withRetry('editMessageText', () => bot.api.editMessageText(groupChatId, messageId, text));
+    return true;
+  } catch (e) {
+    if (e instanceof GrammyError && e.error_code === 400) {
+      if (/message is not modified/i.test(e.description)) return true;
+      // トピック閉鎖／削除は呼び出し側の復旧（reopen / 紐付け解除）に委ねる
+      if (isTopicClosedError(e) || isThreadNotFoundError(e)) throw e;
+      // それ以外の 400（削除済み・編集不可・本文不正 等）は「このメッセージには載せられない」＝新ブロックへ
+      console.warn(`editMessageText 400（新しいブロックを作ります）: ${e.description.slice(0, 120)}`);
+      return false;
+    }
+    throw e;
+  }
+}
+
+/** Telegram の 400 Bad Request（内容不正など、再試行しても通らないエラー）か */
+export function isBadRequestError(e: unknown): boolean {
+  return e instanceof GrammyError && e.error_code === 400;
 }
 
 /** 運用通知。会話本文・顧客名は載せないこと。全受信箱グループへ送る（どこを見ていても気付ける）。
