@@ -166,10 +166,11 @@ async function processConversation(inbox: Inbox, conv: Conversation): Promise<nu
   // その場合は保守側（bootstrapTail 件）に倒して既存顧客の過剰配信を防ぐ
   const trulyNew = startupComplete && !startupKeys.has(key);
   const tail = trulyNew ? Number.MAX_SAFE_INTEGER : cfg.bootstrapTail;
-  // MIRROR_SELF=off では自分側発言を配信候補から外してから判定する。外さないと初遭遇時の末尾 tail 件が
+  // MIRROR_SELF=off の初遭遇では自分側発言を配信候補から外してから判定する。外さないと初遭遇時の末尾 tail 件が
   // ステップ配信（自分側）で埋まり、顧客の初回発言が枠の外に落ちて無音で取りこぼす（レビュー指摘）。
-  // 既知化は下で inbound 全体に対して行うので、外した自分側発言も台帳には残る
-  const candidates = cfg.selfMode === 'off' ? inbound.filter((m) => !m.self) : inbound;
+  // 既知化は下で inbound 全体に対して行うので、外した自分側発言も台帳には残る。初遭遇後は未知分を全件配るので
+  // 絞らず、自分側は splitSelfDelivery で落とす（逆流控え sent_echoes の消費を通すため）
+  const candidates = cfg.selfMode === 'off' && !cust.bootstrapped ? inbound.filter((m) => !m.self) : inbound;
   const { deliver, bootstrap } = decideDeliveryBySeen(
     !!cust.bootstrapped,
     candidates,
