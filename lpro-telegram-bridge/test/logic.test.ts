@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  decideDeliveryBySeen, packDeliveryChunks, toConvMessages, type FpMsg, type ScanMsg,
+  decideDeliveryBySeen, packDeliveryChunks, splitSelfDelivery, chunkIsSelfOnly, toConvMessages, type FpMsg, type ScanMsg,
 } from '../src/logic.js';
 
 const msg = (h: string): FpMsg => ({ text: `本文${h}`, hash: h });
@@ -252,4 +252,35 @@ test('max は「実際の遷移数」で数える（無遷移の候補はカウ�
     new Set(),
     { truncated: false, max: 1, doneAfterMisses: 1 }, streak());
   assert.deepEqual(t, [{ key: 'talk:3', desired: 'done' }]);
+});
+
+// --- 自分側発言の配信可否（MIRROR_SELF）---
+
+test('MIRROR_SELF=false: 顧客側だけ配信し、自分側は逆流控えを消費しつつ落とす', () => {
+  const msgs = [
+    { hash: 'a', self: false }, { hash: 'b', self: true }, { hash: 'c', self: false }, { hash: 'd', self: true },
+  ];
+  const seen: string[] = [];
+  const out = splitSelfDelivery(msgs, false, (m) => { seen.push(m.hash); return m.hash === 'd'; });
+  assert.deepEqual(out.map((m) => m.hash), ['a', 'c']);
+  assert.deepEqual(seen, ['b', 'd']); // 自分側ごとに1回ずつ呼ばれる（控えの残置防止）
+});
+
+test('MIRROR_SELF=true: 自分側も配信するが、Telegram発の逆流（echo）だけ落とす', () => {
+  const msgs = [{ hash: 'a', self: false }, { hash: 'b', self: true }, { hash: 'd', self: true }];
+  const out = splitSelfDelivery(msgs, true, (m) => m.hash === 'd');
+  assert.deepEqual(out.map((m) => m.hash), ['a', 'b']);
+});
+
+test('自分側しか無ければ MIRROR_SELF=false で配信ゼロ（トピックも作らせない）', () => {
+  const out = splitSelfDelivery([{ hash: 'b', self: true }], false, () => false);
+  assert.deepEqual(out, []);
+});
+
+test('chunkIsSelfOnly: 自分側だけなら true、顧客を1件でも含めば false、空は false', () => {
+  const msgs = [{ hash: 'a', self: false }, { hash: 'b', self: true }, { hash: 'c', self: true }];
+  assert.equal(chunkIsSelfOnly(['b', 'c'], msgs), true);
+  assert.equal(chunkIsSelfOnly(['a', 'b'], msgs), false);
+  assert.equal(chunkIsSelfOnly(['x'], msgs), false); // 不明ハッシュは自分側と断定しない
+  assert.equal(chunkIsSelfOnly([], msgs), false);
 });

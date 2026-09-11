@@ -115,6 +115,33 @@ export function decideMarkerTransitions(
 // ── フィンガープリント生成（純関数。Lpro/Telegram 非依存なのでここで単体テストする）──
 import { createHash } from 'node:crypto';
 
+/**
+ * 配信候補のうち実際に Telegram へ流すものを選ぶ（純関数）。
+ *   - 顧客側（self=false）は常に配信
+ *   - 自分側（self=true）は mirrorSelf=true のときだけ配信し、その場合も Telegram 発の返信の逆流
+ *     （isEcho）は配信しない。mirrorSelf=false なら一切配信しない（顧客の発言だけを通知する運用）
+ * isEcho は副作用（控えの消費）を持つので、配信の有無に関わらず自分側発言ごとに必ず1回呼ぶ
+ * （控えを残置しない）。落とした分の既知化（addSeen）は呼び出し側の責務。
+ */
+export function splitSelfDelivery<T extends { self: boolean }>(
+  deliver: T[],
+  mirrorSelf: boolean,
+  isEcho: (m: T) => boolean
+): T[] {
+  return deliver.filter((m) => {
+    if (!m.self) return true;
+    const echo = isEcho(m);
+    return mirrorSelf && !echo;
+  });
+}
+
+/** チャンク（ハッシュ列）が自分側発言だけで構成されているか（サイレント送信の判定。純関数）。
+ * 顧客の発言を1件でも含むチャンクは通常通知にする（空チャンクは false） */
+export function chunkIsSelfOnly(hashes: string[], msgs: Array<{ hash: string; self: boolean }>): boolean {
+  const selfByHash = new Map(msgs.map((m) => [m.hash, m.self] as const));
+  return hashes.length > 0 && hashes.every((h) => selfByHash.get(h) === true);
+}
+
 /** 生スキャン1件（lpro-adapter が行の DOM から抽出）。inbound=true は顧客側（.mb_M.left）。 */
 export type ScanMsg = { inbound: boolean; text: string; dt: string; hasImage: boolean };
 /** フィンガープリント付き会話メッセージ。self=true は自分側（オペレーター/自動応答）の発言。 */

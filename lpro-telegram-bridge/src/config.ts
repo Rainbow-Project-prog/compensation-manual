@@ -37,6 +37,13 @@ export const cfg = {
   // 停止中・稼働中に初めて現れた顧客（=いま送ってきた新規顧客）の初回配信件数。
   // 0にすると初回は何も配らない＝初回メッセージを取りこぼすので注意。
   bootstrapTail: num('BOOTSTRAP_TAIL', 5),
+  // 自分側（L-Pro 側: 一斉配信・自動応答・PC直返信）の発言の扱い（MIRROR_SELF）。
+  //   silent（既定・2026-09-11〜）= 「🔷 自分(L-Pro): 」付きでトピックへ流すが、サイレント送信（音・バイブなし）にする
+  //                               ＝会話の流れは Telegram で全部追えつつ、通知で鳴るのは顧客の発言だけ
+  //   notify / true            = 従来どおり通知付きで流す（2026-07-13 の双方向ミラー）
+  //   off / false              = 流さない（既読台帳には記録するので、後で戻しても過去分が一斉に流れない）
+  // Telegram から送った返信の逆流抑止（sent_echoes）はどのモードでも従来どおり
+  selfMode: selfModeOf(process.env.MIRROR_SELF),
   // 双方向再同期: 未読巡回から外れた（返信済み）顧客も、トピックがあれば定期的に再読して
   // PC直返信・遅延新着を Telegram に反映する。RESYNC_BATCH=0 で無効化。
   //  - resyncBatch は「受信箱ごと」1 interval あたりの会員ID検索の上限（実質 batch × 受信箱数）。
@@ -127,6 +134,17 @@ function required(k: string): string {
   const v = process.env[k];
   if (!v) throw new Error(`環境変数 ${k} が未設定です（.env を確認）`);
   return v;
+}
+
+export type SelfMode = 'silent' | 'notify' | 'off';
+/** MIRROR_SELF の解釈。未設定・不明な値は silent（安全側＝流すが鳴らさない） */
+function selfModeOf(raw: string | undefined): SelfMode {
+  const v = (raw ?? '').trim().toLowerCase();
+  if (v === '' || v === 'silent') return 'silent';
+  if (['off', 'false', '0', 'no'].includes(v)) return 'off';
+  if (['notify', 'true', '1', 'yes', 'on', 'loud'].includes(v)) return 'notify';
+  console.warn(`環境変数 MIRROR_SELF が不明な値です: "${raw}" → silent を使用します（silent / notify / off）`);
+  return 'silent';
 }
 
 // タイプミス（NaN）を黙って通すと「初回メッセージの無音喪失」や「ウェイトなし巡回」になるため既定値へ倒す

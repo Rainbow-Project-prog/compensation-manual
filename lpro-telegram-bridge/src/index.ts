@@ -1,7 +1,9 @@
 import { cfg, inboxes, inboxById, type Inbox } from './config.js';
 import { dbApi, closeDb } from './db.js';
 import { runExclusive, drainQueue } from './queue.js';
-import { decideDeliveryBySeen, packDeliveryChunks, decideMarkerTransitions, type MarkerState } from './logic.js';
+import {
+  decideDeliveryBySeen, packDeliveryChunks, splitSelfDelivery, chunkIsSelfOnly, decideMarkerTransitions, type MarkerState,
+} from './logic.js';
 import { runBackup } from './backup.js';
 import { runDoctor, printResult } from './preflight.js';
 import { writeLock, touchLock, removeLock } from './instances.js';
@@ -164,9 +166,13 @@ async function processConversation(inbox: Inbox, conv: Conversation): Promise<nu
   // その場合は保守側（bootstrapTail 件）に倒して既存顧客の過剰配信を防ぐ
   const trulyNew = startupComplete && !startupKeys.has(key);
   const tail = trulyNew ? Number.MAX_SAFE_INTEGER : cfg.bootstrapTail;
+  // MIRROR_SELF=off では自分側発言を配信候補から外してから判定する。外さないと初遭遇時の末尾 tail 件が
+  // ステップ配信（自分側）で埋まり、顧客の初回発言が枠の外に落ちて無音で取りこぼす（レビュー指摘）。
+  // 既知化は下で inbound 全体に対して行うので、外した自分側発言も台帳には残る
+  const candidates = cfg.selfMode === 'off' ? inbound.filter((m) => !m.self) : inbound;
   const { deliver, bootstrap } = decideDeliveryBySeen(
     !!cust.bootstrapped,
-    inbound,
+    candidates,
     (h) => dbApi.hasSeen(key, h),
     { bootstrapTail: tail }
   );
@@ -180,13 +186,13 @@ async function processConversation(inbox: Inbox, conv: Conversation): Promise<nu
     dbApi.setSeen(key, inbound.length, 1);
     dbApi.setSelfSeeded(key);
   }
-  // 自送信の逆流（Telegram経由で送った返信が自分側吹き出しとして再出現）は配信しない（既知化のみ）。
-  // PC で直接 L-Pro に打った返信は控えに無いのでそのまま配信される＝双方向にリンクする。
-  const toDeliver: typeof deliver = [];
-  for (const m of deliver) {
-    if (m.self && consumeSentEcho(key, m.text)) { dbApi.addSeen(key, m.hash); continue; }
-    toDeliver.push(m);
-  }
+  // 自分側発言の扱い（MIRROR_SELF。config.ts 参照）:
+  //  - silent（既定）/ notify: 自分側（一斉配信・自動応答・PC直返信）も流す。ただし自送信の逆流（Telegram経由で
+  //    送った返信が自分側吹き出しとして再出現）は配信せず既知化のみ。PC で直接 L-Pro に打った返信は控えに無いので
+  //    そのまま流れる＝双方向にリンク。silent では自分側だけのチャンクをサイレント送信し、顧客の発言だけが通知で鳴る
+  //  - off: 自分側は配信せず既知化だけ。自分側しか新着が無い顧客はトピックも作らない
+  const toDeliver = splitSelfDelivery(deliver, cfg.selfMode !== 'off', (m) => consumeSentEcho(key, m.text));
+  for (const m of deliver) if (!toDeliver.includes(m)) dbApi.addSeen(key, m.hash);
   if (toDeliver.length > 0) {
     // トピック名に会員IDを含めて同名顧客の取り違えを防ぐ。トピックは受信箱のグループへ作る。
     // 新規作成時は現在の対応状況マーカー込みの名前にする（未読巡回経路=🔴 / 再同期経路=✅）
@@ -203,13 +209,15 @@ async function processConversation(inbox: Inbox, conv: Conversation): Promise<nu
       { sep: '\n──────\n' }
     );
     for (const chunk of chunks) {
+      // 自分側だけのチャンクはサイレント送信（トピックには入るが音・バイブなし）。顧客の発言を含むチャンクは通常通知
+      const silent = cfg.selfMode === 'silent' && chunkIsSelfOnly(chunk.hashes, toDeliver);
       try {
-        await pushInbound(inbox.groupChatId, threadId, chunk.text);
+        await pushInbound(inbox.groupChatId, threadId, chunk.text, { silent });
       } catch (e) {
         if (isTopicClosedError(e)) {
           console.warn(`[${inbox.name}] トピックが閉じられています。開き直します: ${conv.name}`);
           await reopenTopic(inbox.groupChatId, threadId);
-          await pushInbound(inbox.groupChatId, threadId, chunk.text);
+          await pushInbound(inbox.groupChatId, threadId, chunk.text, { silent });
         } else if (isThreadNotFoundError(e)) {
           console.warn(`[${inbox.name}] トピックが削除されています。次回作り直します: ${conv.name}`);
           dbApi.clearTopic(key);
@@ -237,7 +245,8 @@ const zeroExtractStreak = new Map<string, number>();
 let lastTopicFailNotifyAt = 0;
 
 // 双方向再同期: トピックを開いている顧客を（返信済みで未読巡回から外れていても）定期的に再読し、
-// PC直返信・遅延新着を Telegram へ反映する。会員ID検索が要るので batch 件/interval に絞り負荷を抑える。
+// PC直返信・遅延新着を Telegram へ反映する（MIRROR_SELF=off のときは顧客側の遅延新着だけが対象。自分側は
+// 既知化のみ）。会員ID検索が要るので batch 件/interval に絞り負荷を抑える。
 let lastResyncAt = 0;
 const resyncCursor = new Map<string, number>(); // inbox.id -> ラウンドロビン位置
 

@@ -115,7 +115,14 @@ export function retryAfterMs(e: unknown): number | null {
  * 意図的な非対称: sendMessage はネットワーク断/5xx でも再試行する（応答喪失時は同一メッセージが
  * トピックに二重表示され得るが、表示重複は消失より害が小さい）。createForumTopic は逆に
  * 再試行しない（重複トピック＝返信喪失の温床になるため）。 */
-export async function pushInbound(groupChatId: number, threadId: number, text: string): Promise<void> {
+/** トピックへ本文を送る。silent=true はサイレント送信（Telegram の disable_notification: トピックには普通に
+ * 入り未読にもなるが、受信側で音・バイブが鳴らない）。自分側（L-Pro 側）の発言に使い、顧客の発言だけが通知で鳴るようにする */
+export async function pushInbound(
+  groupChatId: number,
+  threadId: number,
+  text: string,
+  opts: { silent?: boolean } = {}
+): Promise<void> {
   if (!text) return; // 空文字は Telegram が 400 で拒否する
   const CHUNK = 4000;
   let i = 0;
@@ -126,7 +133,7 @@ export async function pushInbound(groupChatId: number, threadId: number, text: s
     if (end < text.length && c >= 0xd800 && c <= 0xdbff) end--;
     const part = text.slice(i, end);
     await withRetry('sendMessage', () =>
-      bot.api.sendMessage(groupChatId, part, { message_thread_id: threadId }));
+      bot.api.sendMessage(groupChatId, part, { message_thread_id: threadId, disable_notification: opts.silent === true }));
     i = end;
   }
 }
