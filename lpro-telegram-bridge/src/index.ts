@@ -700,7 +700,8 @@ async function main(): Promise<void> {
   setLoginNotifier((e, detail) => {
     if (e === 'waiting') {
       void notifyOps(
-        '⚠️ Lpro に未ログインです。ブリッジは受信・返信を止めてログイン待機中です。表示中のブラウザ（赤いバナー付き）で手動ログイン（2FA含む）してください。' +
+        '⚠️ Lpro に未ログインです。ブリッジは受信・返信を止めてログイン待機中です。' +
+        (cfg.headless ? '（HEADLESS=true のため手動ログインはできません。自動ログインの結果を待ちます）' : '表示中のブラウザ（赤いバナー付き）で手動ログイン（2FA含む）してください。') +
         (detail ? `（${detail}）` : '')
       );
     } else if (e === 'wrong-site') {
@@ -709,7 +710,7 @@ async function main(): Promise<void> {
       // 未ログインを通知する前に自動で復旧できたとき（⚠️ は出ていない）。セッション失効があった事実だけ残す
       void notifyOps(`🔑 Lpro のセッションが切れていたため自動ログインしました（${detail ?? ''}）。監視を続けています。`);
     } else if (e === 'auto-login-failed') {
-      void notifyOps(`⚠️ Lpro の自動ログイン: ${detail ?? '失敗しました'}。表示中のブラウザ（赤いバナー付き）で手動ログインもできます。`);
+      void notifyOps(`⚠️ Lpro の自動ログイン: ${detail ?? '失敗しました'}。${cfg.headless ? '' : '表示中のブラウザ（赤いバナー付き）で手動ログインもできます。'}`);
     } else if (e === 'auto-login-blocked') {
       void notifyOps(
         `🚫 自動ログインを停止しました: ${detail ?? ''}。.env の資格情報（LPRO_LOGIN_ID / LPRO_LOGIN_PASSKEY）または` +

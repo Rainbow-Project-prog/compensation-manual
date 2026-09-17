@@ -45,6 +45,8 @@ export type AutoLoginResult =
   | { kind: 'no-form'; detail: string }
   /** フォームはあるが埋められない（資格情報なし、かつ自動入力もされていない）。何も触っていない＝人の入力待ち */
   | { kind: 'need-input'; detail: string }
+  /** ID 欄に資格情報と違う値が入っている＝人が入力中の可能性。何も触っていない（再試行時のみ判定） */
+  | { kind: 'busy'; detail: string }
   /** 送信した（1回だけ）。ログインできたかどうかは呼び出し側が判定する */
   | { kind: 'submitted'; filledFrom: 'env' | 'prefilled'; how: 'click' | 'requestSubmit' | 'enter'; detail: string };
 
@@ -59,7 +61,7 @@ const LINK_TEXT_RE = /^\s*(ログイン|log\s*in|sign\s*in)\s*$/i;
 // 入力・クリックの待ち上限。fill/click は要素が編集可能・有効になるまで待つので、readonly/disabled だとここまで待って throw する
 const ACTION_TIMEOUT_MS = 8_000;
 
-type FoundForm = { frame: Frame; pass: Locator; id: Locator | null; idReadonly: boolean; submit: Locator | null; hasForm: boolean };
+type FoundForm = { frame: Frame; pass: Locator; id: Locator | null; idReadonly: boolean; hasForm: boolean };
 
 async function firstVisible(loc: Locator): Promise<Locator | null> {
   const n = await loc.count().catch(() => 0);
@@ -81,7 +83,8 @@ export async function loginFormVisible(page: Page, passSelector: string): Promis
 /** 人が操作しうる入力欄（テキスト系・パスワード・textarea）が表示されているか。
  * 送信後に着地したページが「追加認証などの対話ページ」か「空・エラー・遷移中」かの見分けに使う */
 export async function pageHasVisibleInputs(page: Page): Promise<boolean> {
-  const sel = 'input:not([type]), input[type="text"], input[type="tel"], input[type="number"], input[type="email"], input[type="password"], textarea';
+  const sel = 'input:not([type]), input[type="text"], input[type="tel"], input[type="number"], input[type="email"], input[type="password"], ' +
+    'input[type="radio"], input[type="checkbox"], textarea, select';
   for (const f of page.frames()) {
     if (await firstVisible(f.locator(sel))) return true;
   }
@@ -109,7 +112,7 @@ async function findLoginForm(page: Page, sel: LoginSelectors, log: (msg: string)
     if (!pass) continue;
     const marks = await pass
       .evaluate(
-        (pw: Element, a: { markId: string; markSubmit: string; idSel: string; submitSel: string; textRe: string; excludeRe: string; linkRe: string }) => {
+        (pw: Element, a: { markId: string; markSubmit: string; idSel: string }) => {
           const input = pw as HTMLInputElement;
           const form = input.form;
           const scope: ParentNode = form ?? input.ownerDocument;
@@ -118,17 +121,14 @@ async function findLoginForm(page: Page, sel: LoginSelectors, log: (msg: string)
             el.removeAttribute(a.markId);
             el.removeAttribute(a.markSubmit);
           }
-          // 表示中の候補要素（幅・高さがあり display:none / visibility:hidden でない）と、その文言
-          const cands: Array<{ el: Element; text: string; input: boolean }> = [];
-          const q = a.idSel || a.submitSel
-            ? `input, button, a, [role="button"], ${[a.idSel, a.submitSel].filter((x) => x).join(', ')}`
-            : 'input, button, a, [role="button"]';
+          // 表示中の候補要素（幅・高さがあり display:none / visibility:hidden でない）
+          const cands: Array<{ el: Element; input: boolean }> = [];
+          const q = a.idSel ? `input, ${a.idSel}` : 'input';
           for (const el of scope.querySelectorAll(q)) {
             const r = el.getBoundingClientRect();
             const cs = getComputedStyle(el);
             if (!(r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none')) continue;
-            const text = [(el as HTMLInputElement).value, el.textContent, el.getAttribute('alt'), el.getAttribute('title')].join(' ');
-            cands.push({ el, text, input: el instanceof HTMLInputElement });
+            cands.push({ el, input: el instanceof HTMLInputElement });
           }
           // ── ID 欄 ──
           let idEl: Element | null = null;
@@ -149,40 +149,9 @@ async function findLoginForm(page: Page, sel: LoginSelectors, log: (msg: string)
           }
           if (idEl) idEl.setAttribute(a.markId, '1');
           const idReadonly = !!idEl && idEl instanceof HTMLInputElement && (idEl.readOnly || idEl.disabled);
-          // ── 送信ボタン ──
-          let btn: Element | null = null;
-          if (a.submitSel) {
-            btn = cands.find((c) => c.el.matches(a.submitSel))?.el ?? null;
-          } else {
-            const textRe = new RegExp(a.textRe, 'i');
-            const excludeRe = new RegExp(a.excludeRe, 'i');
-            const linkRe = new RegExp(a.linkRe, 'i');
-            const submitTypes = 'button[type="submit"], input[type="submit"], input[type="image"]';
-            // disabled のボタンは押せない（click が待ち続けて throw する）ので候補から外す＝form 送信へ倒れる
-            const buttons = cands.filter((c) =>
-              c.el.matches('button, input[type="submit"], input[type="button"], input[type="image"]') &&
-              !(c.el as HTMLButtonElement).disabled && !excludeRe.test(c.text));
-            const links = cands.filter((c) => c.el.matches('a, [role="button"]') && linkRe.test(c.text));
-            const submitOnes = buttons.filter((c) => c.el.matches(submitTypes));
-            btn =
-              submitOnes.find((c) => textRe.test(c.text))?.el ??
-              // 文言で選べない submit 型は「それ1つしか無い」ときだけ（複数あると再発行ボタン等を押しかねない）
-              (submitOnes.length === 1 ? submitOnes[0].el : undefined) ??
-              buttons.find((c) => textRe.test(c.text))?.el ??
-              links[0]?.el ??
-              // form 内の type 無し <button> は submit 扱い（1つだけのとき）
-              (form && buttons.filter((c) => c.el.matches('button:not([type]), button[type=""]')).length === 1
-                ? buttons.find((c) => c.el.matches('button:not([type]), button[type=""]'))?.el
-                : undefined) ??
-              null;
-          }
-          if (btn) btn.setAttribute(a.markSubmit, '1');
-          return { hasForm: !!form, hasId: !!idEl, idReadonly, hasSubmit: !!btn };
+          return { hasForm: !!form, hasId: !!idEl, idReadonly };
         },
-        {
-          markId: MARK_ID, markSubmit: MARK_SUBMIT, idSel: sel.loginIdInput, submitSel: sel.loginSubmit,
-          textRe: BUTTON_TEXT_RE.source, excludeRe: BUTTON_EXCLUDE_RE.source, linkRe: LINK_TEXT_RE.source,
-        }
+        { markId: MARK_ID, markSubmit: MARK_SUBMIT, idSel: sel.loginIdInput }
       )
       .catch((e: unknown) => { log(`自動ログイン: フォームの判定に失敗（${String(e).split('\n')[0]?.slice(0, 200)}）`); return null; });
     if (!marks) continue;
@@ -191,11 +160,63 @@ async function findLoginForm(page: Page, sel: LoginSelectors, log: (msg: string)
       pass,
       id: marks.hasId ? frame.locator(`[${MARK_ID}="1"]`).first() : null,
       idReadonly: marks.idReadonly,
-      submit: marks.hasSubmit ? frame.locator(`[${MARK_SUBMIT}="1"]`).first() : null,
       hasForm: marks.hasForm,
     };
   }
   return null;
+}
+
+/** 送信ボタンを選ぶ（入力後に呼ぶ: 入力で有効化されるボタンは入力前だと disabled で候補から外れるため）。
+ * 判定ロジックは findLoginForm の evaluate と同じ（同じ関数を2回走らせて目印を付け直す） */
+async function pickSubmit(found: FoundForm, sel: LoginSelectors, log: (msg: string) => void): Promise<Locator | null> {
+  const marks = await found.pass
+    .evaluate(
+      (pw: Element, a: { markSubmit: string; submitSel: string; textRe: string; excludeRe: string; linkRe: string }) => {
+        const input = pw as HTMLInputElement;
+        const form = input.form;
+        const scope: ParentNode = form ?? input.ownerDocument;
+        for (const el of input.ownerDocument.querySelectorAll(`[${a.markSubmit}]`)) el.removeAttribute(a.markSubmit);
+        const cands: Array<{ el: Element; text: string }> = [];
+        const q = a.submitSel ? `button, input, a, [role="button"], ${a.submitSel}` : 'button, input, a, [role="button"]';
+        for (const el of scope.querySelectorAll(q)) {
+          const r = el.getBoundingClientRect();
+          const cs = getComputedStyle(el);
+          if (!(r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none')) continue;
+          cands.push({ el, text: [(el as HTMLInputElement).value, el.textContent, el.getAttribute('alt'), el.getAttribute('title')].join(' ') });
+        }
+        let btn: Element | null = null;
+        if (a.submitSel) {
+          btn = cands.find((c) => c.el.matches(a.submitSel))?.el ?? null;
+        } else {
+          const textRe = new RegExp(a.textRe, 'i');
+          const excludeRe = new RegExp(a.excludeRe, 'i');
+          const linkRe = new RegExp(a.linkRe, 'i');
+          const submitTypes = 'button[type="submit"], input[type="submit"], input[type="image"]';
+          // disabled のボタンは押せない（click が待ち続けて throw する）ので候補から外す＝form 送信へ倒れる
+          const buttons = cands.filter((c) =>
+            c.el.matches('button, input[type="submit"], input[type="button"], input[type="image"]') &&
+            !(c.el as HTMLButtonElement).disabled && !excludeRe.test(c.text));
+          const links = cands.filter((c) => c.el.matches('a, [role="button"]') && linkRe.test(c.text));
+          const submitOnes = buttons.filter((c) => c.el.matches(submitTypes));
+          btn =
+            submitOnes.find((c) => textRe.test(c.text))?.el ??
+            // 文言で選べない submit 型は「それ1つしか無い」ときだけ（複数あると再発行ボタン等を押しかねない）
+            (submitOnes.length === 1 ? submitOnes[0].el : undefined) ??
+            buttons.find((c) => textRe.test(c.text))?.el ??
+            links[0]?.el ??
+            // form 内の type 無し <button> は submit 扱い（1つだけのとき）
+            (form && buttons.filter((c) => c.el.matches('button:not([type]), button[type=""]')).length === 1
+              ? buttons.find((c) => c.el.matches('button:not([type]), button[type=""]'))?.el
+              : undefined) ??
+            null;
+        }
+        if (btn) btn.setAttribute(a.markSubmit, '1');
+        return !!btn;
+      },
+      { markSubmit: MARK_SUBMIT, submitSel: sel.loginSubmit, textRe: BUTTON_TEXT_RE.source, excludeRe: BUTTON_EXCLUDE_RE.source, linkRe: LINK_TEXT_RE.source }
+    )
+    .catch((e: unknown) => { log(`自動ログイン: 送信ボタンの判定に失敗（${String(e).split('\n')[0]?.slice(0, 200)}）`); return false; });
+  return marks ? found.frame.locator(`[${MARK_SUBMIT}="1"]`).first() : null;
 }
 
 /**
@@ -205,15 +226,24 @@ async function findLoginForm(page: Page, sel: LoginSelectors, log: (msg: string)
  */
 export async function attemptAutoLogin(
   page: Page,
-  opts: { creds: AutoLoginCreds | null; selectors: LoginSelectors; log?: (msg: string) => void }
+  opts: {
+    creds: AutoLoginCreds | null;
+    selectors: LoginSelectors;
+    log?: (msg: string) => void;
+    /** 再試行時: ID 欄に資格情報と違う値が入っていれば人が入力中とみなして触らない（busy） */
+    skipIfTyped?: boolean;
+  }
 ): Promise<AutoLoginResult> {
   const log = opts.log ?? (() => {});
   const creds = opts.creds;
   const found = await findLoginForm(page, opts.selectors, log);
   if (!found) return { kind: 'no-form', detail: `パスキー欄（${opts.selectors.loginPassInput}）が表示されていません` };
-  const { frame, pass, id, idReadonly, submit, hasForm } = found;
+  const { frame, pass, id, idReadonly, hasForm } = found;
   const idVal = id ? (await id.inputValue().catch(() => '')).trim() : '';
   const passVal = await pass.inputValue().catch(() => '');
+  if (opts.skipIfTyped && creds?.id && idVal && idVal !== creds.id) {
+    return { kind: 'busy', detail: 'ID 欄に設定と違う値が入っています（人が入力中の可能性）。このフォームには触りません' };
+  }
 
   let filledFrom: 'env' | 'prefilled';
   try {
@@ -242,6 +272,7 @@ export async function attemptAutoLogin(
   // noWaitAfter: ナビゲーション完了を待たない（遅いログイン応答で click がタイムアウトすると「送信済みなのに失敗」になる）。
   // click が throw するのは要素の操作可能性チェック（表示・有効）で弾かれたとき＝まだ送信していないので、次の手段に倒せる
   const where = frame === page.mainFrame() ? 'メインフレーム' : `iframe(${frame.name() || frame.url().slice(0, 60)})`;
+  const submit = await pickSubmit(found, opts.selectors, log);
   if (submit) {
     try {
       await submit.click({ timeout: ACTION_TIMEOUT_MS, noWaitAfter: true });

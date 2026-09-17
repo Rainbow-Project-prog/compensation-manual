@@ -157,7 +157,12 @@ export function runDoctor(): PreflightResult {
     } catch { /* .env が無い場合は上で検出済み */ }
     if (off) notes.push('自動ログイン: 無効（AUTO_LOGIN=off。セッション失効時は手動ログイン待ち）');
     else if (pk) notes.push('自動ログイン: 有効（.env の ID/パスキーで入力・送信）');
-    else notes.push('自動ログイン: 資格情報なし（ブラウザが自動入力済みのフォームを送信するだけ。無人復旧には LPRO_LOGIN_ID / LPRO_LOGIN_PASSKEY を設定）');
+    else {
+      notes.push('自動ログイン: 資格情報なし（ブラウザが自動入力済みのフォームを送信するだけ。無人復旧には LPRO_LOGIN_ID / LPRO_LOGIN_PASSKEY を設定）');
+      if (!(process.env.LPRO_SITE_ID ?? '').trim()) {
+        warnings.push('LPRO_SITE_ID が未設定です。ブラウザの自動入力で別アカウントに入っても検出できません（設定を推奨）');
+      }
+    }
   }
 
   // 数値系はタイプミス（NaN）が「初回メッセージの無音喪失」「ウェイトなし巡回」に直結するため事前に弾く

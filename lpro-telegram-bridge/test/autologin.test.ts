@@ -298,13 +298,13 @@ browserTest('複数回呼んでも目印属性が前回の要素に残らない�
   // 1回目は need-input（触らないが目印は付く）
   const r1 = await attemptAutoLogin(page, { creds: null, selectors: SEL });
   assert.equal(r1.kind, 'need-input');
-  assert.equal(await page.locator('[data-lpro-bridge-login-submit="1"]').count(), 1);
+  assert.equal(await page.locator('[data-lpro-bridge-login-id="1"]').count(), 1); // 送信ボタンは入力後に選ぶので、この時点では ID 欄の目印だけ
   // 送信ボタンと ID 欄を差し替える（旧要素は form の外へ移して残す＝古い目印が付いたまま）
   await page.evaluate(() => {
     const form = document.querySelector('form')!;
     const oldSubmit = form.querySelector('input[type="submit"]')!;
     const oldId = form.querySelector('input[name="id"]')!;
-    document.body.append(oldSubmit, oldId); // form の外へ（表示はされたまま）
+    document.body.prepend(oldSubmit, oldId); // form の外・DOM 順で手前へ（古い目印が残っていればこちらが先に拾われる）
     const id = document.createElement('input'); id.type = 'text'; id.name = 'id';
     form.prepend(id);
     const btn = document.createElement('button'); btn.type = 'submit'; btn.textContent = 'ログイン';
@@ -356,7 +356,7 @@ browserTest('送信ボタンが disabled: 押さずに form.requestSubmit() で�
   assert.deepEqual(posted(s), ['user1/secret-pk']);
 });
 
-browserTest('文言の無い画像ボタン＋別の submit（パスキー再発行）: 再発行を押さず form を送信する', async (page) => {
+browserTest('文言の無い画像ボタン＋別の submit（パスキー再発行）: 再発行は文言で除外し、残った画像ボタンを押す', async (page) => {
   const s = site(`<html><body><!--ERR-->
 <form method="post" action="/manage/login">
   <input type="submit" value="パスキー再発行" formaction="/manage/reissue">
@@ -424,4 +424,54 @@ browserTest('pageHasVisibleInputs: 追加認証ページは true、入力欄の�
   assert.equal(await pageHasVisibleInputs(page), true);
   await page.setContent('<html><body><input type="text" style="display:none"><input type="hidden" name="x"></body></html>');
   assert.equal(await pageHasVisibleInputs(page), false);
+});
+
+browserTest('非表示のパスキー欄（display:none の別フォーム）しか無いページ: no-form', async (page) => {
+  const s = site(`<html><body><form style="display:none" method="post" action="/manage/chpass"><input type="password" name="old"><input type="password" name="new"></form><p>メンテナンス中</p></body></html>`);
+  await mount(page, s);
+  await page.goto(`${ORIGIN}/manage/`);
+  const r = await attemptAutoLogin(page, { creds: CREDS, selectors: SEL });
+  assert.equal(r.kind, 'no-form');
+  assert.equal(await loginFormVisible(page, SEL.loginPassInput), false);
+  assert.equal(s.posts.length, 0);
+});
+
+browserTest('パスキーだけ設定・ID 欄が空: need-input（ID 未設定）で触らない', async (page) => {
+  const s = site(FORM_STD);
+  await mount(page, s);
+  await page.goto(`${ORIGIN}/manage/`);
+  const r = await attemptAutoLogin(page, { creds: { id: '', pass: CREDS.pass }, selectors: SEL });
+  assert.equal(r.kind, 'need-input');
+  assert.ok(r.kind === 'need-input' && r.detail.includes('LPRO_LOGIN_ID'), r.kind === 'need-input' ? r.detail : '');
+  assert.equal(await page.locator('input[name="passkey"]').inputValue(), '');
+  assert.equal(s.posts.length, 0);
+});
+
+browserTest('再試行時（skipIfTyped）: ID 欄に別の値が入っていれば人が入力中とみなして触らない／初回は上書きする', async (page) => {
+  const s = site(FORM_STD.replace('name="id"', 'name="id" value="someone-typing"'));
+  await mount(page, s);
+  await page.goto(`${ORIGIN}/manage/`);
+  const r1 = await attemptAutoLogin(page, { creds: CREDS, selectors: SEL, skipIfTyped: true });
+  assert.equal(r1.kind, 'busy');
+  assert.equal(await page.locator('input[name="id"]').inputValue(), 'someone-typing');
+  assert.equal(s.posts.length, 0);
+  const r2 = await attemptAutoLogin(page, { creds: CREDS, selectors: SEL, skipIfTyped: false });
+  assert.equal(r2.kind, 'submitted');
+  await page.locator(MARKER).first().waitFor({ state: 'visible', timeout: 5_000 });
+  assert.deepEqual(posted(s), ['user1/secret-pk']);
+});
+
+browserTest('入力後に有効化される送信ボタン（入力前は disabled）: 入力してからボタンを選ぶので click で送信できる', async (page) => {
+  const s = site(`<html><body><!--ERR-->
+<form method="post" action="/manage/login" oninput="document.getElementById('go').disabled = !(this.id.value && this.passkey.value)">
+  <input type="text" name="id"><input type="password" name="passkey">
+  <input type="submit" id="go" value="ログイン" disabled>
+</form></body></html>`);
+  await mount(page, s);
+  await page.goto(`${ORIGIN}/manage/`);
+  const r = await attemptAutoLogin(page, { creds: CREDS, selectors: SEL });
+  assert.equal(r.kind, 'submitted');
+  assert.equal(r.kind === 'submitted' && r.how, 'click');
+  await page.locator(MARKER).first().waitFor({ state: 'visible', timeout: 5_000 });
+  assert.deepEqual(posted(s), ['user1/secret-pk']);
 });

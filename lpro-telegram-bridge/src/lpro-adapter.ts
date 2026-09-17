@@ -244,6 +244,7 @@ export async function initBrowser(): Promise<void> {
   currentInboxId = null;
   generation++;
   sessionVerified = false; // 新しいブラウザ。ensureLoggedIn が通るまで退避しない
+  resetAutoLoginForNewBrowser(); // 前のブラウザの画面に紐づく再試行待ちは持ち越さない（バックオフは維持）
   // 正常終了→再起動で Chromium が捨てるセッションCookie（JSESSIONID）を、最初のナビゲーションの前に戻す
   await restoreSessionCookies(ctx!);
   // 最初の受信箱でログイン確認（複数受信箱でもログインは共通のセッション）
@@ -417,18 +418,24 @@ async function logoutLpro(p: Page): Promise<boolean> {
 // 失敗のたびに間隔を延ばす（同じ資格情報を連打してアカウントロックを招かない）。ログイン確認OK でリセット。
 // 「送信したがログインフォーム以外の対話ページになった」（追加認証など）は失敗に数えず、画面を触らずに人を待つ
 const AUTO_LOGIN_BACKOFF_MS = [30_000, 2 * 60_000, 10 * 60_000, 30 * 60_000, 60 * 60_000];
-const AUTO_LOGIN_RESULT_WAIT_MS = 30_000;       // 送信後にログイン済みマーカーを待つ上限
-const AUTO_LOGIN_LATE_SUCCESS_MS = 3 * 60_000;  // 送信からこの時間内にマーカーが出たら「自動ログインで入った」とみなす
+const AUTO_LOGIN_RESULT_WAIT_MS = 30_000;       // 送信後にログイン済みマーカーを待つ上限（同じ document のままなら同じ長さだけ延長＝遅い応答）
+const AUTO_LOGIN_LATE_SUCCESS_MS = 3 * 60_000;  // 送信からこの時間内にマーカーが出たら「自動ログインで入った」とみなす（失敗確定後は除く）
 const AUTO_LOGIN_FORM_WAIT_MS = 8_000;          // ログインページを開いた後、フォーム（or マーカー）の描画を待つ上限
 const AUTO_LOGIN_OTHER_PAGE_WAIT_MS = 15 * 60_000;
+const AUTO_LOGIN_HUMAN_PAGE_EXTEND_MS = 60_000; // 人が操作中かもしれないページを見つけたとき、再試行を延ばす単位
+const AUTO_LOGIN_HUMAN_PAGE_MAX_EXTENDS = 15;   // その延長の上限（≒15分）。超えたら開き直して再試行する（無限に待たない）
 const AUTO_LOGIN_NO_FORM_RETRY_MS = 60_000;
 const AUTO_LOGIN_NEED_INPUT_RETRY_MS = 15 * 60_000;
+const AUTO_LOGIN_PROBE_EVERY_MS = 60_000;       // 待機中、別タブでログイン状態を確かめる間隔（nav の無い着地ページ対策）
 const AUTO_LOGIN_LOG_EVERY_MS = 15 * 60_000;
-let autoLoginFailures = 0;    // 資格情報が拒否された（送信後もログインフォームのまま）連続回数
+let autoLoginFailures = 0;    // 資格情報が拒否された（送信後もログインフォームのまま／応答不明）連続回数
 let autoLoginOtherPages = 0;  // 送信後に入力欄のある別ページ（追加認証？）へ着地した連続回数（通知の間引き用）
 let autoLoginNextAt = 0;
 let autoLoginLastResult = ''; // describeAutoLogin（バナー・⚠️通知）用の直近結果
 let autoLoginLastFilledFrom: 'env' | 'prefilled' | null = null;
+// 直近の送信時刻と、その送信を「失敗」と確定したか。失敗確定していない送信の直後にマーカーが出たら自動ログイン成功とみなす
+let autoLoginSubmittedAt = 0;
+let autoLoginSubmitFailed = false;
 // 資格情報（.env またはブラウザの自動入力）が「この案件と別のアカウント」だった等、人が直すまで自動ログインを止める理由
 let autoLoginBlocked: string | null = null;
 let autoLoginBlockedSource: 'env' | 'prefilled' | null = null;
@@ -439,6 +446,13 @@ function logEvery(key: string, ms: number, msg: string): void {
   if (now - (lastLoggedAt.get(key) ?? 0) < ms) return;
   lastLoggedAt.set(key, now);
   console.log(msg);
+}
+/** ブラウザを開き直したとき（クラッシュ復旧・日次再起動）に呼ぶ: 画面に紐づく待ち時間は捨て、ロック防止のバックオフだけ残す */
+function resetAutoLoginForNewBrowser(): void {
+  autoLoginOtherPages = 0;
+  autoLoginSubmittedAt = 0;
+  autoLoginSubmitFailed = false;
+  if (autoLoginFailures === 0) autoLoginNextAt = 0;
 }
 
 function autoLoginCreds(): AutoLoginCreds | null {
@@ -486,13 +500,38 @@ async function waitForMarker(p: Page, timeoutMs: number): Promise<boolean> {
   }
   return false;
 }
+/** いま表示中の画面を壊さずにログイン状態を確かめる: 同じコンテキスト（＝同じ Cookie）で別タブに /manage/ を開き、
+ * ログイン済みマーカーが出るかを見て閉じる。送信後の着地ページに nav が無い場合や、人が追加認証を操作中の場合に使う */
+async function probeLoggedIn(p: Page, timeoutMs = 10_000): Promise<boolean> {
+  let tab: Page | null = null;
+  try {
+    tab = await p.context().newPage();
+    await tab.goto(cfg.loginUrl, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
+    return await tab.locator(SELECTORS.loggedInMarker).first()
+      .waitFor({ state: 'visible', timeout: timeoutMs }).then(() => true, () => false);
+  } catch (e) {
+    if (isBrowserGoneError(e)) throw e;
+    return false;
+  } finally {
+    await tab?.close().catch(() => {});
+  }
+}
+// 送信前に main frame の document に印を付ける。送信後も印が残っていれば「まだ同じ document」＝ナビゲーション待ち
+// （遅いログイン応答）か JS だけの拒否表示。印が消えていればサーバー応答で描画し直された
+const STAMP_KEY = '__lproBridgeLoginStamp';
+async function stampDocument(p: Page): Promise<void> {
+  await p.evaluate((k) => { (window as unknown as Record<string, unknown>)[k] = 1; }, STAMP_KEY).catch(() => {});
+}
+async function stampPresent(p: Page): Promise<boolean> {
+  return p.evaluate((k) => (window as unknown as Record<string, unknown>)[k] === 1, STAMP_KEY).catch(() => false);
+}
 
 type AutoLoginAttempt = { loggedIn: boolean; submitted: boolean; notified: boolean };
 
 /** ログインページで自動ログインを1回試み、結果を分類する。送信は最大1回。
  * 結果に応じて次回の試行時刻（autoLoginNextAt）・失敗回数・直近結果を更新する。
  * notified=true は ⚠️ を出した（呼び出し側が「未ログイン」アラート済みとして扱い、復旧時に ✅ を出す） */
-async function tryAutoLoginOnce(p: Page): Promise<AutoLoginAttempt> {
+async function tryAutoLoginOnce(p: Page, retry: boolean): Promise<AutoLoginAttempt> {
   const none: AutoLoginAttempt = { loggedIn: false, submitted: false, notified: false };
   const creds = autoLoginCreds();
   // フォーム（or マーカー）の描画待ち。domcontentloaded 直後は JS 描画・iframe が間に合わないことがある
@@ -503,8 +542,9 @@ async function tryAutoLoginOnce(p: Page): Promise<AutoLoginAttempt> {
   }
   let r: AutoLoginResult = { kind: 'no-form', detail: `パスキー欄 ${SELECTORS.loginPassInput} もログイン済みマーカーも ${AUTO_LOGIN_FORM_WAIT_MS / 1000} 秒以内に表示されず` };
   if (state === 'form') {
+    await stampDocument(p);
     try {
-      r = await attemptAutoLogin(p, { creds, selectors: loginSelectors(), log: (m) => console.log(m) });
+      r = await attemptAutoLogin(p, { creds, selectors: loginSelectors(), log: (m) => console.log(m), skipIfTyped: retry });
     } catch (e) {
       // attemptAutoLogin が throw したときは送信していない（autologin.ts の契約）。エラー文は資格情報をスクラブ済み
       if (isBrowserGoneError(e)) throw e;
@@ -529,7 +569,15 @@ async function tryAutoLoginOnce(p: Page): Promise<AutoLoginAttempt> {
     autoLoginNextAt = Date.now() + AUTO_LOGIN_NEED_INPUT_RETRY_MS;
     return none;
   }
+  if (r.kind === 'busy') {
+    autoLoginLastResult = '人が入力中のため見送り';
+    logEvery('autologin:busy', AUTO_LOGIN_LOG_EVERY_MS, `自動ログイン: ${r.detail}。${AUTO_LOGIN_NO_FORM_RETRY_MS / 1000}秒後に見直します`);
+    autoLoginNextAt = Date.now() + AUTO_LOGIN_NO_FORM_RETRY_MS;
+    return none;
+  }
   autoLoginLastFilledFrom = r.filledFrom;
+  autoLoginSubmittedAt = Date.now();
+  autoLoginSubmitFailed = false;
   console.log(`自動ログイン: 送信しました（${r.filledFrom === 'env' ? '.env の資格情報' : '入力済みのフォーム'} / ${r.detail}）。結果を待ちます…`);
   const succeed = (when: string): AutoLoginAttempt => {
     autoLoginFailures = 0;
@@ -539,14 +587,38 @@ async function tryAutoLoginOnce(p: Page): Promise<AutoLoginAttempt> {
     console.log(`自動ログイン: ログイン済みを確認しました（${when}）`);
     return { loggedIn: true, submitted: true, notified: false };
   };
+  const fail = (reason: string): AutoLoginAttempt => {
+    autoLoginFailures++;
+    autoLoginOtherPages = 0;
+    autoLoginSubmitFailed = true;
+    const wait = AUTO_LOGIN_BACKOFF_MS[Math.min(autoLoginFailures - 1, AUTO_LOGIN_BACKOFF_MS.length - 1)];
+    autoLoginNextAt = Date.now() + wait;
+    autoLoginLastResult = `失敗 ${autoLoginFailures} 回（${reason}）`;
+    const msg = `自動ログインに失敗しました（${autoLoginFailures}回目: ${reason}）。次の自動再試行は${fmtWait(wait)}`;
+    console.warn(`自動ログイン: ${msg}`);
+    // 通知は 1回目・3回目、以後は毎回（5回目以降は再試行が1時間間隔なので連発しない）
+    const notify = autoLoginFailures === 1 || autoLoginFailures === 3 || autoLoginFailures >= 5;
+    if (notify) notifyLogin('auto-login-failed', msg);
+    return { loggedIn: false, submitted: true, notified: notify };
+  };
   if (await waitForMarker(p, AUTO_LOGIN_RESULT_WAIT_MS)) return succeed('送信直後');
-  // マーカーが出ない。いまの画面で分類する:
+  // 同じ document のままフォームが見えている＝サーバー応答待ち（遅いログイン）か JS だけの拒否表示。同じ長さだけ1回延長する
+  if ((await loginFormVisible(p, SELECTORS.loginPassInput)) && (await stampPresent(p))) {
+    console.log(`自動ログイン: ${AUTO_LOGIN_RESULT_WAIT_MS / 1000}秒たっても応答がありません（Lpro が遅い可能性）。もう${AUTO_LOGIN_RESULT_WAIT_MS / 1000}秒待ちます`);
+    if (await waitForMarker(p, AUTO_LOGIN_RESULT_WAIT_MS)) return succeed('遅い応答');
+  }
+  // マーカーが出ない。いまの画面で分類する（画面は壊さない: ログイン状態の確認は別タブで行う）:
   //  (a) ログインフォームが出ている          → 資格情報が拒否された（or 送信が効かなかった）: 失敗として数え、バックオフ
-  //  (b) 入力欄のある別ページ                → 追加認証・確認画面の可能性: 人が操作中かもしれないので触らず長めに待つ
-  //  (c) 入力欄の無いページ（空・エラー・着地ページ）→ ログインURLを開き直して判定し直す。ログイン済みならシェルにマーカーが出る
-  //      （nav の無い着地ページ・遅い応答）。フォームが出れば (a)。どちらも出なければ一過性として短い間隔で再試行
-  let formNow = await loginFormVisible(p, SELECTORS.loginPassInput);
-  if (!formNow) {
+  //  (b) 入力欄のある別ページ                → 別タブで確認してログイン済みならそれで成功（nav の無い着地ページ）。
+  //                                            未ログインなら追加認証・確認画面の可能性: 触らず長めに待つ
+  //  (c) 入力欄の無いページ（空・エラー）    → 別タブで確認して成功/未ログインを判定。未ログインならログインURLを開き直し、
+  //                                            フォームが出ても出なくても失敗として数える（応答不明でもバックオフに乗せる）
+  if (!(await loginFormVisible(p, SELECTORS.loginPassInput))) {
+    if (await probeLoggedIn(p)) {
+      // 着地ページに nav が無いだけ。本体側の画面もログインURLへ寄せる
+      await p.goto(cfg.loginUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
+      return succeed('別タブで確認');
+    }
     if (await pageHasVisibleInputs(p)) {
       autoLoginOtherPages++;
       autoLoginLastResult = '送信後に別の入力ページ（追加認証？）';
@@ -559,30 +631,13 @@ async function tryAutoLoginOnce(p: Page): Promise<AutoLoginAttempt> {
       if (notify) notifyLogin('auto-login-failed', msg);
       return { loggedIn: false, submitted: true, notified: notify };
     }
-    console.log('自動ログイン: 送信後の画面にマーカーもフォームも入力欄もありません。ログインページを開き直して確認します');
+    console.log('自動ログイン: 送信後の画面にマーカーもフォームも入力欄もなく、別タブでも未ログインです。ログインページを開き直します');
     await p.goto(cfg.loginUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
     const st = await waitForLoginPage(p, 10_000);
     if (st === 'marker') return succeed('開き直し後');
-    if (st === 'none') {
-      autoLoginLastResult = '送信後の応答が不明（Lpro 側の一過性エラー？）';
-      console.warn(`自動ログイン: 送信後もログイン状態を確認できず、ログインフォームも出ません（Lpro 側の一過性エラーの可能性）。${AUTO_LOGIN_NO_FORM_RETRY_MS / 1000}秒後に再試行します`);
-      autoLoginNextAt = Date.now() + AUTO_LOGIN_NO_FORM_RETRY_MS;
-      return { loggedIn: false, submitted: true, notified: false };
-    }
-    formNow = true;
+    return fail(st === 'form' ? '送信後にエラーページ→ログイン画面。ID/パスキー拒否の疑い' : '送信後の応答が不明（Lpro 側の一過性エラー？）');
   }
-  // (a) 資格情報が拒否された疑い
-  autoLoginFailures++;
-  autoLoginOtherPages = 0;
-  const wait = AUTO_LOGIN_BACKOFF_MS[Math.min(autoLoginFailures - 1, AUTO_LOGIN_BACKOFF_MS.length - 1)];
-  autoLoginNextAt = Date.now() + wait;
-  autoLoginLastResult = `失敗 ${autoLoginFailures} 回（ID/パスキー拒否の疑い）`;
-  const msg = `自動ログインに失敗しました（${autoLoginFailures}回目）。ID/パスキーが拒否されたか、ログイン画面の構造が想定と違います。次の自動再試行は${fmtWait(wait)}`;
-  console.warn(`自動ログイン: ${msg}`);
-  // 通知は 1回目・3回目、以後は毎回（5回目以降は再試行が1時間間隔なので連発しない）
-  const notify = autoLoginFailures === 1 || autoLoginFailures === 3 || autoLoginFailures >= 5;
-  if (notify) notifyLogin('auto-login-failed', msg);
-  return { loggedIn: false, submitted: true, notified: notify };
+  return fail('ID/パスキー拒否の疑い');
 }
 
 export async function ensureLoggedIn(inbox: Inbox = inboxes[0]): Promise<void> {
@@ -605,15 +660,16 @@ export async function ensureLoggedIn(inbox: Inbox = inboxes[0]): Promise<void> {
   // 復旧通知の文面を変えるため）。alerted = 運用へ ⚠️/🚫 を出したか（出したときだけ復旧の ✅ を出す）
   let viaAuto = false;
   let alerted = false;
+  const headlessError = (prefix: string): Error => new Error(
+    prefix +
+    (autoLoginBlocked ? `自動ログインは停止中（${autoLoginBlocked}）で、` : '') +
+    'HEADLESS=true のため手動ログインできません。.env で HEADLESS=false にして `npm run login` を実行するか、' +
+    'LPRO_LOGIN_ID / LPRO_LOGIN_PASSKEY（と LPRO_SITE_ID）を設定して自動ログインを有効にしてください'
+  );
   if (!ok) {
     // 無人で成立する自動ログインは「.env の資格情報あり」のときだけ（ブラウザの自動入力は headless では効かず、人もいない）
     if (cfg.headless && !(autoLoginEnabled() && autoLoginCreds())) {
-      throw new Error(
-        (wrongSite ? `別のアカウントでログインされています（${wrongSite}）が、` : '未ログインですが ') +
-        (autoLoginBlocked ? `自動ログインは停止中（${autoLoginBlocked}）で、` : '') +
-        'HEADLESS=true のため手動ログインできません。.env で HEADLESS=false にして `npm run login` を実行するか、' +
-        'LPRO_LOGIN_ID / LPRO_LOGIN_PASSKEY（と LPRO_SITE_ID）を設定して自動ログインを有効にしてください'
-      );
+      throw headlessError(wrongSite ? `別のアカウントでログインされています（${wrongSite}）が、` : '未ログインですが ');
     }
     // ★以前は5分デッドラインで throw していたが、それだと PM2 が即再起動し、開いていた
     //   ログイン用ウィンドウごと消えて 2FA を中断してしまう（＝誰にも通知されない無音クラッシュループ）。
@@ -623,7 +679,7 @@ export async function ensureLoggedIn(inbox: Inbox = inboxes[0]): Promise<void> {
     // ★2026-09-17〜 自動ログイン: ログインフォームが出ていれば .env の資格情報（or 自動入力済みの内容）で送信し、
     //   人を待たずに復旧する。失敗時はバックオフして再試行し、その間も人の手動ログインを受け付ける（下の待機ループ）。
     //   再試行でページを開き直すのは「ログインフォームが見えている」か「入力欄の無いページ」のときだけ
-    //   （人が操作中かもしれない追加認証ページ等を壊さない）
+    //   （人が操作中かもしれない追加認証ページ等を壊さない。ただし上限あり＝無限には待たない）
     loginWaiting = true;
     sessionVerified = false; // ここから先のブラウザの Cookie は未認証（or 別アカウント）なので退避しない
     // アラートの間隔: 通常は15分ごと。別アカウント検出時は（前回から1分以上空いていれば）即時に知らせる。
@@ -639,6 +695,7 @@ export async function ensureLoggedIn(inbox: Inbox = inboxes[0]): Promise<void> {
     // 別アカウント検出は自動ログアウトの成否に依らず即時（誤送信の芽なので猶予を置かない）
     let nextAlertAt = wrongSite ? 0 : Date.now() + FIRST_ALERT_GRACE_MS;
     let logoutFailed = initialLogoutFailed;
+    let attempts = 0; // この待機中に自動ログインを試みた回数（2回目以降は人の入力中フォームに触らない）
     const markAlerted = (): void => {
       lastAlertAt = Date.now();
       nextAlertAt = lastAlertAt + REALERT_MS;
@@ -678,7 +735,8 @@ export async function ensureLoggedIn(inbox: Inbox = inboxes[0]): Promise<void> {
     try {
       for (;;) {
         viaAuto = false;
-        let submittedAt = 0;
+        let humanPageExtends = 0;
+        let lastProbeAt = Date.now();
         if (wrongSite) {
           console.log(
             logoutFailed
@@ -701,9 +759,9 @@ export async function ensureLoggedIn(inbox: Inbox = inboxes[0]): Promise<void> {
         let seen = false;
         // ── 自動ログイン（ログインフォームが出ていれば、資格情報 or 自動入力済みの内容で1回送信）──
         if (autoLoginEnabled() && !logoutFailed && Date.now() >= autoLoginNextAt) {
-          const r = await tryAutoLoginOnce(p);
+          const r = await tryAutoLoginOnce(p, attempts > 0);
+          attempts++;
           if (r.notified) markAlerted();
-          if (r.submitted) submittedAt = Date.now();
           if (r.loggedIn) {
             seen = true;
             viaAuto = r.submitted; // 送信せずにマーカーが見えた＝人が入れた or 一過性の空振り
@@ -714,9 +772,17 @@ export async function ensureLoggedIn(inbox: Inbox = inboxes[0]): Promise<void> {
         while (!seen) {
           maybeAlert();
           seen = await p.locator(SELECTORS.loggedInMarker).first().isVisible().catch(() => false);
+          // 表示中の画面に nav が無くても（人が nav の無いページで作業中・着地ページ）、別タブなら分かる。1分に1回
+          if (!seen && Date.now() - lastProbeAt >= AUTO_LOGIN_PROBE_EVERY_MS) {
+            lastProbeAt = Date.now();
+            if (await probeLoggedIn(p)) {
+              seen = true;
+              await p.goto(cfg.loginUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
+            }
+          }
           if (seen) {
-            // 自分の送信から間もなくマーカーが出た＝遅れて成立した自動ログイン（遅いログイン応答）
-            if (submittedAt && Date.now() - submittedAt < AUTO_LOGIN_LATE_SUCCESS_MS) {
+            // 自分の送信（失敗と確定していないもの）から間もなくマーカーが出た＝遅れて成立した自動ログイン
+            if (autoLoginSubmittedAt && !autoLoginSubmitFailed && Date.now() - autoLoginSubmittedAt < AUTO_LOGIN_LATE_SUCCESS_MS) {
               viaAuto = true;
               console.log('自動ログイン: 遅れてログイン済みを確認しました');
             }
@@ -724,9 +790,11 @@ export async function ensureLoggedIn(inbox: Inbox = inboxes[0]): Promise<void> {
           }
           if (autoLoginEnabled() && !logoutFailed && Date.now() >= autoLoginNextAt) {
             // 再試行（外側ループで開き直し）は、ログインフォームが見えているか、誰も操作しようのないページ（入力欄なし）のときだけ。
-            // 人が操作中かもしれない対話ページ（追加認証など）は壊さず、少し待って見直す
-            if ((await loginFormVisible(p, SELECTORS.loginPassInput)) || !(await pageHasVisibleInputs(p))) break;
-            autoLoginNextAt = Date.now() + AUTO_LOGIN_NO_FORM_RETRY_MS;
+            // 人が操作中かもしれない対話ページ（追加認証など）は壊さず少し待って見直す。ただし上限を超えたら開き直す（無限に待たない）
+            if ((await loginFormVisible(p, SELECTORS.loginPassInput)) || !(await pageHasVisibleInputs(p)) ||
+                humanPageExtends >= AUTO_LOGIN_HUMAN_PAGE_MAX_EXTENDS) break;
+            humanPageExtends++;
+            autoLoginNextAt = Date.now() + AUTO_LOGIN_HUMAN_PAGE_EXTEND_MS;
           }
           await p.waitForTimeout(2000);
         }
@@ -757,6 +825,13 @@ export async function ensureLoggedIn(inbox: Inbox = inboxes[0]): Promise<void> {
           console.error(`自動ログインを停止します: ${autoLoginBlocked}`);
           notifyLogin('auto-login-blocked', autoLoginBlocked);
           markAlerted();
+          await logoutLpro(p);
+          // headless では人が入り直せないので、起動時と同じ明確なエラーで止める（PM2 ログに理由が残る）
+          if (cfg.headless) throw headlessError('');
+          // 🚫 で伝えたので、以後は通常の未ログイン（自動ログイン停止中）として待つ（別アカウントの通知を繰り返さない）
+          wrongSite = null;
+          logoutFailed = false;
+          continue;
         }
         // また別アカウント → ログアウトしてやり直し。ログアウトが効かなければ人の手動ログアウトを待つ
         // （画面を奪い続けないよう 30 秒あけてから再確認）
@@ -777,6 +852,8 @@ export async function ensureLoggedIn(inbox: Inbox = inboxes[0]): Promise<void> {
   autoLoginOtherPages = 0;
   autoLoginNextAt = 0;
   autoLoginLastResult = '';
+  autoLoginSubmittedAt = 0;
+  autoLoginSubmitFailed = false;
   // ログイン済みの Cookie を退避（プロセス再起動をまたいでログインを引き継ぐ）。内容が同じなら書かない
   sessionVerified = true;
   void persistSessionCookies(p.context(), 'ログイン確認OK');
