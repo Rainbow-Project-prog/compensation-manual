@@ -1,0 +1,266 @@
+// ★env.js を最初に import する（案件の解決と .env の読み込み。他の import より先）★
+import { instanceId, dataDir, envPath } from './env.js';
+import { join } from 'node:path';
+import { resolveDataPaths } from './paths.js';
+
+// DB・プロファイル・バックアップは案件のデータディレクトリ基準（CWD 非依存）。
+// 既定案件はパッケージルート、案件名ありは instances/<案件名>/（env.ts / paths.ts 参照）
+const paths = resolveDataPaths(dataDir, process.env);
+
+export const cfg = {
+  // 案件（インスタンス）: ID はディレクトリ名・PM2 アプリ名、LABEL は運用通知・ログイン待ち画面の表示名
+  instanceId,
+  instanceLabel: (process.env.INSTANCE_LABEL ?? '').trim() || instanceId,
+  dataDir,
+  envPath,
+  dbPath: paths.dbPath,
+  backupDir: paths.backupDir,
+  // Lpro のログイン Cookie（セッションCookie）の退避先。Chromium は正常終了→再起動でセッションCookieを
+  // 捨てるため、プロセス再起動（PM2 stop/start・PC再起動）をまたいでログインを引き継ぐのに使う。
+  // DPAPI（ログオンユーザー鍵）で暗号化して置く。詳細は src/session.ts
+  sessionFile: join(dataDir, '.lpro-session'),
+  telegramToken: required('TELEGRAM_BOT_TOKEN'),
+  loginUrl: required('LPRO_LOGIN_URL'),
+  pollIntervalMs: Math.max(1000, num('POLL_INTERVAL_MS', 8000)),
+  onlyUnread: (process.env.ONLY_UNREAD ?? 'true') === 'true',
+  headless: (process.env.HEADLESS ?? 'false') === 'true',
+  userDataDir: paths.userDataDir,
+  // Lpro の /manage は HTTP ベーシック認証（realm "InfoSys Manager"）で保護されている。
+  // これは Cookie と違いプロファイルに永続しないため、環境変数から毎回渡す必要がある
+  // （設定すると Playwright が認証チャレンジに自動応答する）。Lpro アプリのログインとは別物。
+  basicUser: process.env.LPRO_BASIC_USER ?? '',
+  basicPass: process.env.LPRO_BASIC_PASS ?? '',
+  // この案件の Lpro サイトID（menu iframe の URL に載る site_id。初回ログイン後のログ「Lpro サイト確認: site_id=NN」で分かる）。
+  // 設定すると、別のアカウントでログインされた場合に自動ログアウトして正しいログインを待つ
+  // （同じ Lpro サーバーに複数案件がある場合の、別案件の顧客への誤送信防止）。空なら照合しない
+  lproSiteId: (process.env.LPRO_SITE_ID ?? '').trim(),
+  // 自動ログイン（src/autologin.ts）。Lpro のセッションが失効してログイン画面になったとき、人を待たずに入り直す。
+  //   auto（既定）= LPRO_LOGIN_ID / LPRO_LOGIN_PASSKEY があれば入力して送信する。無ければ、ブラウザの自動入力で
+  //                 フォームが埋まっているときだけ送信ボタンを押す（何も埋まっていなければ従来どおり手動ログイン待ち）
+  //   off         = ログイン画面には一切触らない（2026-09-17 以前の挙動）
+  // 失敗時は間隔を延ばして再試行し（アカウントロック防止）、別アカウントだった場合は自動停止する（lpro-adapter）
+  autoLogin: autoLoginModeOf(process.env.AUTO_LOGIN),
+  loginId: (process.env.LPRO_LOGIN_ID ?? '').trim(),
+  loginPasskey: process.env.LPRO_LOGIN_PASSKEY ?? '',
+  // 停止中・稼働中に初めて現れた顧客（=いま送ってきた新規顧客）の初回配信件数。
+  // 0にすると初回は何も配らない＝初回メッセージを取りこぼすので注意。
+  bootstrapTail: num('BOOTSTRAP_TAIL', 5),
+  // 自分側（L-Pro 側: 一斉配信・自動応答・PC直返信）の発言の扱い（MIRROR_SELF）。
+  //   silent（既定・2026-09-11〜）= トピック内の「追記ブロック」（🔷 L-Pro側（配信・返信））に編集で追記する。
+  //                               編集は Telegram の未読・通知を発生させないので、通知が鳴りバッジが増えるのは
+  //                               顧客の発言だけ。顧客の発言の直後に空ブロックを添え、以後の配信はそこへ追記（logic.ts）
+  //   notify / true            = 従来どおり「🔷 自分(L-Pro): 」付きの通常メッセージとして流す（2026-07-13 の双方向ミラー）
+  //   off / false              = 流さない（既読台帳には記録するので、後で戻しても過去分が一斉に流れない）
+  // Telegram から送った返信の逆流抑止（sent_echoes）はどのモードでも従来どおり
+  selfMode: selfModeOf(process.env.MIRROR_SELF),
+  // 双方向再同期: 未読巡回から外れた（返信済み）顧客も、トピックがあれば定期的に再読して
+  // PC直返信・遅延新着を Telegram に反映する。RESYNC_BATCH=0 で無効化。
+  //  - resyncBatch は「受信箱ごと」1 interval あたりの会員ID検索の上限（実質 batch × 受信箱数）。
+  //  - resyncMaxMs は 1 tick 全体の壁時計上限。これを超えたら打ち切り、未読巡回の再開を遅らせない。
+  //  - resyncActiveWindowMs より古い（休眠）会話は再同期対象にしない＝負荷とレイテンシを一定に保つ。
+  resyncIntervalMs: Math.max(5000, num('RESYNC_INTERVAL_MS', 30000)),
+  resyncBatch: Math.max(0, num('RESYNC_BATCH', 5)),
+  resyncMaxMs: Math.max(3000, num('RESYNC_MAX_MS', 15000)),
+  resyncActiveWindowMs: Math.max(60000, num('RESYNC_ACTIVE_WINDOW_MS', 3 * 24 * 60 * 60 * 1000)),
+  // 日次ティック（定時ハートビート＋DBバックアップ）を実行するローカル時刻（0〜23）。負数で無効。
+  // ブリッジの停止は死んだプロセス自身には通知できない: 「毎日この時刻に💓が届く」契約にして、
+  // 通知の"欠落"で無音死に気付けるようにする（2026-07-29〜08-06 の8日間無音停止の再発防止）
+  dailyTickHour: Math.min(23, num('DAILY_TICK_HOUR', 9)),
+  // DBバックアップの保持世代数（1日1世代）
+  backupRetain: Math.max(1, num('BACKUP_RETAIN', 14)),
+  // 日次ティックでブラウザ（chromium）を閉じて開き直す。長時間稼働で一覧の空振り・検索フォーム待ちの
+  // タイムアウト（「一覧に行が1件もありません」「検索フォームが現れません」）が日を追って増える傾向が
+  // 2つの稼働期間（2026-08-16〜20、08-30〜09-07: 9日目で初日の約7倍）で観測されたため、1日1回リセットする。
+  // ★ログインセッション（JSESSIONID）は有効期限なしのセッションCookieで、Chromium は正常終了→再起動で
+  //   これを捨てる（2026-09-11 の定期再起動でログアウト→ログイン待ちになった）。開き直しの前後で
+  //   cookies()/addCookies() により明示的に引き継ぐ（lpro-adapter.recycleBrowser / src/session.ts）。
+  dailyBrowserRecycle: (process.env.DAILY_BROWSER_RECYCLE ?? 'true') === 'true',
+  // 日次ティック（💓）からブラウザ開き直しまでの遅延（分）。Lpro は毎時 0〜7 分台に一過性エラー
+  // （検索フォーム未出現・一覧0件）が集中する（サーバー側の毎時処理と見られる）。💓は 9:00 ちょうどに
+  // 送るが、開き直し直後のログイン確認をその時間帯にぶつけると「未ログイン」と誤判定しやすいので外す
+  dailyRecycleDelayMs: Math.max(0, num('DAILY_RECYCLE_DELAY_MIN', 10)) * 60_000,
+};
+
+/**
+ * Lpro には独立した2つの受信箱がある（2026-07-12 動画で判明）:
+ *   - チャット応対（chat_message）: 自動応答が効かず全部手動対応 → 必ず監視
+ *   - ダイレクトトーク応対（linechat_message）: 基本は自動応答だが、キーワードに
+ *     変な絵文字が付くと不発 → 取りこぼし防止のため監視
+ * それぞれ別の Telegram グループへ配信する（受信箱の取り違え＝誤配信を構造的に防ぐ）。
+ * 構造（iframe経路・行・吹き出し・返信）は両者ほぼ同一なので SELECTORS は共用。
+ * chatframe の URL だけが違うため chatframeRe で受信箱を判別する。
+ */
+export type Inbox = {
+  id: 'chat' | 'talk';
+  name: string;
+  talkUrl: string;      // シェルの main iframe に読み込む URL
+  groupChatId: number;  // この受信箱を流す Telegram グループ
+  chatframeRe: RegExp;  // 顧客行 iframe（name=chatframe）を受信箱ごとに判別する
+  menuRe: RegExp;       // 検索フォーム iframe（*_message_menu）を受信箱ごとに判別する
+};
+
+// 各受信箱は「URL と グループID の両方が設定されている」ときだけ有効
+const ALL_INBOXES: Inbox[] = [
+  {
+    id: 'chat',
+    name: 'チャット応対',
+    talkUrl: process.env.CHAT_TALK_URL ?? '',
+    groupChatId: num('CHAT_GROUP_CHAT_ID', 0),
+    // 顧客行 iframe の判別。実DOM(dump)では chat の chatframe URL はクエリが剥がれて
+    // `.../chat_message`（?無し）に落ち着くため ?有無どちらも許容する。ただし main ラッパー
+    // `chat_message?method=frame` と menu `chat_message_menu?` は除外する（前が "/" なので
+    // linechat_message にも一致しない）。
+    chatframeRe: /\/chat_message(?:\?(?!.*method=frame)|$)/,
+    menuRe: /\/chat_message_menu\b/,
+  },
+  {
+    id: 'talk',
+    name: 'ダイレクトトーク応対',
+    talkUrl: process.env.TALK_TALK_URL ?? '',
+    groupChatId: num('TALK_GROUP_CHAT_ID', 0),
+    // talk は chatframe が `linechat_message?site_id...`（?有り）、main ラッパーは
+    // `linechat_message_frame`（?無し・後ろが _frame）なので method=frame 除外と併せて衝突しない。
+    chatframeRe: /\/linechat_message(?:\?(?!.*method=frame)|$)/,
+    menuRe: /\/linechat_message_menu\b/,
+  },
+];
+
+export const inboxes: Inbox[] = ALL_INBOXES.filter((i) => i.talkUrl && i.groupChatId);
+
+export function inboxById(id: string): Inbox | undefined {
+  return inboxes.find((i) => i.id === id);
+}
+export function inboxByGroup(groupChatId: number): Inbox | undefined {
+  return inboxes.find((i) => i.groupChatId === groupChatId);
+}
+
+/** launchPersistentContext に渡す httpCredentials（ベーシック認証が未設定なら undefined） */
+export function httpCredentials(): { username: string; password: string } | undefined {
+  return cfg.basicUser ? { username: cfg.basicUser, password: cfg.basicPass } : undefined;
+}
+
+function required(k: string): string {
+  const v = process.env[k];
+  if (!v) throw new Error(`環境変数 ${k} が未設定です（.env を確認）`);
+  return v;
+}
+
+export type AutoLoginMode = 'auto' | 'off';
+/** AUTO_LOGIN の解釈。未設定・不明な値は auto（資格情報が無ければ自動入力済みフォームの送信だけ＝実害なし） */
+function autoLoginModeOf(raw: string | undefined): AutoLoginMode {
+  const v = (raw ?? '').trim().toLowerCase();
+  if (['off', 'false', '0', 'no'].includes(v)) return 'off';
+  if (v !== '' && !['auto', 'on', 'true', '1', 'yes'].includes(v)) {
+    console.warn(`環境変数 AUTO_LOGIN が不明な値です: "${raw}" → auto を使用します（auto / off）`);
+  }
+  return 'auto';
+}
+
+export type SelfMode = 'silent' | 'notify' | 'off';
+/** MIRROR_SELF の解釈。未設定・不明な値は silent（安全側＝流すが鳴らさない） */
+function selfModeOf(raw: string | undefined): SelfMode {
+  const v = (raw ?? '').trim().toLowerCase();
+  if (v === '' || v === 'silent') return 'silent';
+  if (['off', 'false', '0', 'no'].includes(v)) return 'off';
+  if (['notify', 'true', '1', 'yes', 'on', 'loud'].includes(v)) return 'notify';
+  console.warn(`環境変数 MIRROR_SELF が不明な値です: "${raw}" → silent を使用します（silent / notify / off）`);
+  return 'silent';
+}
+
+// タイプミス（NaN）を黙って通すと「初回メッセージの無音喪失」や「ウェイトなし巡回」になるため既定値へ倒す
+// （doctor/preflight でも同じ値を問題として検出する）
+function num(k: string, def: number): number {
+  const raw = process.env[k];
+  if (raw === undefined || raw.trim() === '') return def;
+  const v = Number(raw);
+  if (!Number.isFinite(v)) {
+    console.warn(`環境変数 ${k} が数値ではありません: "${raw}" → 既定値 ${def} を使用します`);
+    return def;
+  }
+  return v;
+}
+
+/**
+ * ★★★ Lpro 依存はこの SELECTORS だけ ★★★
+ * 2026-07-11 実機 DOM（npm run dump → dump/frame-*.html）で確定。
+ * Lpro の UI が変わったら基本ここを直すだけで復旧できる（RUNBOOK A 参照）。
+ *
+ * 画面構造（重要）:
+ *   トーク応対は「一覧クリックで開く」型ではなく、1ページに顧客ブロック（行）が
+ *   縦に並ぶインライン型。行 = プロフィール + 会話履歴（直近数件のみ表示）+ 返信欄。
+ *   実体は iframe の入れ子: /manage/（シェル）→ iframe[name="main"]（chat_message?method=frame）
+ *   → iframe[name="chatframe"]（chat_message = 顧客行のテーブル）。
+ *
+ * ⚠️ chatframe の先頭には「一括返信」フォーム（#form0 / #message0 / input#btn_send、
+ *    tr.rowitem[data-rowid="0"]）がある。誤って触ると全顧客一斉送信になるため、
+ *    すべての操作は「会員IDで特定した行」のスコープ内でのみ行うこと（lpro-adapter が保証）。
+ *
+ * ※ すべて純CSS（frame.evaluate 内の querySelectorAll / matches で使うため、
+ *    Playwright 拡張構文 :has-text() 等は使用不可）。
+ */
+export const SELECTORS = {
+  // ── フレーム経路 ──
+  // 右コンテンツの iframe（/manage/ シェル配下）。talkUrl を直接開いた場合は不要になる
+  mainFrame: 'iframe[name="main"]',
+  // 顧客行テーブルの iframe（chat_message）
+  chatFrame: 'iframe[name="chatframe"]',
+  // /manage/ シェルでのログイン済み判定（ログアウトメニューはログイン後にだけ出る）
+  loggedInMarker: 'nav.opemenu a[href="logout"]',
+
+  // ── ログインフォーム（自動ログイン用。src/autologin.ts）──
+  // 2026-09-17 時点でログイン画面の実DOMは未収集。パスキー欄だけ一般的なセレクタで指定し、ID 欄・送信ボタンは
+  // '' = 自動判定（パスキー欄と同じ form 内でその直前のテキスト入力 / 同じ form の submit ボタン）に任せる。
+  // 自動ログインが「送信しました」の後に失敗し続けるときは `npm run dump -- <LPRO_LOGIN_URL> login`（ログアウト状態で）
+  // でログイン画面の DOM を取り、ここを確定する（RUNBOOK C）
+  loginPassInput: 'input[type="password"]',
+  loginIdInput: '',
+  loginSubmit: '',
+
+  // ── 顧客行（chatframe 内）──
+  // 顧客1件分の行。一括返信行（data-rowid="0"）も同じ class を持つため、
+  // 会員ID要素（memberIdText）を持つ行だけを顧客として扱う
+  conversationItem: 'tr.rowitem[data-rowid]',
+  // 行内: 会員ID（顧客キー。アカバンでも不変とヒアリング済み）
+  memberIdText: 'span[id^="member_id"]',
+  // 行内: LINE ユーザー名（表示用。キーには使わない）
+  customerName: 'mark.lineusername',
+  // 行内: 返信状態セル（縦書きで「未返信」/「返信済み」）
+  statusCell: 'td.henshin',
+  // statusCell がこの文字列を含めば未読（未返信）扱い
+  unreadText: '未返信',
+
+  // ── メッセージ（行内の会話履歴。直近数件のみ表示される点に注意）──
+  // 1メッセージ分のグループ。左=顧客(inbound) / 右=自分(outbound)
+  messageGroup: '.chat_inner > .mb_M',
+  // グループがこの class を持てば顧客の発言
+  inboundGroupClass: 'left',
+  // グループ内: 吹き出し本体（mmsg_member / mmsg_char / mmsg_char2 の総称）
+  bubble: '[class*="mmsg_"]',
+  // グループ内: 日時表示（例: 07/04<br>22:04。フィンガープリントの材料）
+  msgDatetime: '.mmsgdt',
+
+  // ── 返信（必ず行スコープで使う）──
+  replyInput: 'textarea[name="message"]',
+  sendButton: 'input.btn_send',
+
+  // ── 検索フォーム（menu iframe 内。任意の会員を返信済み含めて開くため）──
+  // 会員ID絞り込み（カンマ区切り可）。1件だけ入れればその会員だけ表示される
+  memberIdFilter: 'textarea[name="member_id"]',
+  // 「すべて」＝ jokyo=0（未返信/返信済みを問わず表示）。返信済みの相手や掘り起こしでも開ける
+  searchAllButton: 'button.find.jokyo0',
+  // 「未返信のみ」＝ jokyo=1。巡回で毎回これを送信し、直前の検索状態に依存しない確定的な一覧にする
+  searchUnreadButton: 'button.find.jokyo1',
+  // 表示数=500件（value=4）。既定100件だと未返信が100超のとき古い顧客を静かに取りこぼすため広げる
+  limitLarge: 'input[name="limit"][value="4"]',
+};
+
+// 表示上限（limitLarge=500件）。巡回でこの件数に達したら「打ち切りの可能性」を警告する
+export const DISPLAY_LIMIT = 500;
+// limitLarge の指定に失敗した場合のサーバー既定表示件数（打ち切り判定をこちらへ落とす）
+export const DISPLAY_LIMIT_FALLBACK = 100;
+
+// 返信送信の受理シグナル（2026-07-18 診断で判明）。送信ボタンは chatframe への form POST ではなく、
+// AJAX で /manage/json/<名前>_send（トーク=line_send / チャット=chat_send）へ POST する。この応答が
+// 200 で返れば Lpro が返信を受理した＝送信成功。受信箱に依らず「<名前>_send」を受理エンドポイントとみなす。
+// （line_talk_lst 等の一覧更新 POST は send を含まないのでマッチしない）
+export const SEND_ACCEPT_RE = /\/manage\/json\/[a-z]+_send\b/i;

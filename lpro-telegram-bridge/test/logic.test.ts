@@ -1,0 +1,357 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  decideDeliveryBySeen, packDeliveryChunks, splitSelfDelivery, splitRuns, buildSelfBlockText, packSelfBlocks, safeSlice,
+  selfBlockHeader, selfBlockPlaceholder, SELF_BLOCK_HEADER, SELF_BLOCK_PLACEHOLDER_LINE, SELF_BLOCK_MAX,
+  toConvMessages, type FpMsg, type ScanMsg,
+} from '../src/logic.js';
+
+const msg = (h: string): FpMsg => ({ text: `本文${h}`, hash: h });
+const msgs = (...hs: string[]) => hs.map(msg);
+const seenSet = (...hs: string[]) => {
+  const s = new Set(hs);
+  return (h: string) => s.has(h);
+};
+
+// --- 初回ブートストラップ ---
+
+test('初回(tail=0/未指定)は配信ゼロ', () => {
+  const d = decideDeliveryBySeen(false, msgs('a', 'b', 'c'), seenSet());
+  assert.equal(d.bootstrap, true);
+  assert.deepEqual(d.deliver, []);
+});
+
+test('初回 tail=5: 末尾5件だけ配る', () => {
+  const d = decideDeliveryBySeen(false, msgs('a', 'b', 'c', 'd', 'e', 'f', 'g'), seenSet(), { bootstrapTail: 5 });
+  assert.equal(d.bootstrap, true);
+  assert.deepEqual(d.deliver.map((m) => m.hash), ['c', 'd', 'e', 'f', 'g']);
+});
+
+test('初回 tail=5 で履歴3件なら全件配る', () => {
+  const d = decideDeliveryBySeen(false, msgs('a', 'b', 'c'), seenSet(), { bootstrapTail: 5 });
+  assert.deepEqual(d.deliver.map((m) => m.hash), ['a', 'b', 'c']);
+});
+
+test('初回 tail が負数でも安全（配信ゼロ扱い）', () => {
+  const d = decideDeliveryBySeen(false, msgs('a', 'b'), seenSet(), { bootstrapTail: -1 });
+  assert.deepEqual(d.deliver, []);
+});
+
+test('初回で履歴ゼロでも壊れない', () => {
+  const d = decideDeliveryBySeen(false, [], seenSet(), { bootstrapTail: 5 });
+  assert.equal(d.bootstrap, true);
+  assert.deepEqual(d.deliver, []);
+});
+
+// --- 2回目以降（フィンガープリント差分） ---
+
+test('全て既知なら配信しない', () => {
+  const d = decideDeliveryBySeen(true, msgs('a', 'b', 'c'), seenSet('a', 'b', 'c'));
+  assert.equal(d.bootstrap, false);
+  assert.deepEqual(d.deliver, []);
+});
+
+test('末尾の未知分だけを表示順のまま配信', () => {
+  const d = decideDeliveryBySeen(true, msgs('a', 'b', 'c', 'd'), seenSet('a', 'b'));
+  assert.deepEqual(d.deliver.map((m) => m.hash), ['c', 'd']);
+});
+
+test('★同数入れ替わり（旧1件が窓から消え新1件が入る）でも新着を検知する', () => {
+  // 件数ベース方式の原理的欠陥 [22] の回帰テスト:
+  // 窓 [a,b,c] (3件・既知) → 窓 [b,c,d] (3件・同数) — d を取りこぼしてはならない
+  const d = decideDeliveryBySeen(true, msgs('b', 'c', 'd'), seenSet('a', 'b', 'c'));
+  assert.deepEqual(d.deliver.map((m) => m.hash), ['d']);
+});
+
+test('窓が縮んでも（部分描画）既知分の再配信をしない', () => {
+  // 窓 [a,b,c,d,e] 既知 → 部分描画で [c,d] しか見えないサイクル → 配信ゼロ
+  const d = decideDeliveryBySeen(true, msgs('c', 'd'), seenSet('a', 'b', 'c', 'd', 'e'));
+  assert.deepEqual(d.deliver, []);
+});
+
+test('縮小→復帰しても再配信ゼロ・新着だけ配信', () => {
+  const seen = seenSet('a', 'b', 'c', 'd', 'e');
+  const dip = decideDeliveryBySeen(true, msgs('c', 'd'), seen);
+  assert.deepEqual(dip.deliver, []);
+  const recovered = decideDeliveryBySeen(true, msgs('b', 'c', 'd', 'e', 'f'), seen);
+  assert.deepEqual(recovered.deliver.map((m) => m.hash), ['f']);
+});
+
+test('同一本文・同一日時の連投はハッシュ連番で別メッセージとして届く', () => {
+  // adapter は同一(日時,本文)の2件目に ":1" を付ける → 未知として配信される
+  const d = decideDeliveryBySeen(true, msgs('x', 'x:1'), seenSet('x'));
+  assert.deepEqual(d.deliver.map((m) => m.hash), ['x:1']);
+});
+
+test('順序は入力の表示順を維持する', () => {
+  const d = decideDeliveryBySeen(true, msgs('n1', 'k', 'n2'), seenSet('k'));
+  assert.deepEqual(d.deliver.map((m) => m.hash), ['n1', 'n2']);
+});
+
+test('deliver は self などの追加フィールドを保ったまま返す（ジェネリック）', () => {
+  const items = [
+    { text: 'a', hash: 'a', self: false },
+    { text: 'b', hash: 'b', self: true },
+  ];
+  const d = decideDeliveryBySeen(true, items, seenSet('a'));
+  assert.deepEqual(d.deliver, [{ text: 'b', hash: 'b', self: true }]);
+});
+
+// --- packDeliveryChunks（大量配信の429対策: 連結チャンク化） ---
+
+const fmt = (m: FpMsg) => m.text; // msg('a') → text='本文a'（3字）
+
+test('minBatch 未満は連結しない（通常の新着は従来どおり1件1通）', () => {
+  const out = packDeliveryChunks(msgs('a', 'b'), fmt, { minBatch: 6 });
+  assert.deepEqual(out, [
+    { text: '本文a', hashes: ['a'] },
+    { text: '本文b', hashes: ['b'] },
+  ]);
+});
+
+test('minBatch 以上は連結され、text とハッシュがチャンクに対応する', () => {
+  const out = packDeliveryChunks(msgs('a', 'b', 'c'), fmt, { minBatch: 3, maxChars: 1000, sep: '|' });
+  assert.deepEqual(out, [{ text: '本文a|本文b|本文c', hashes: ['a', 'b', 'c'] }]);
+});
+
+test('maxChars 超過で分割される（順序維持・ハッシュの取り落としなし）', () => {
+  // 本文x=3字, sep=1字 → 「本文a|本文b」=7字 は maxChars=8 に収まり、c を足すと11字で溢れる
+  const out = packDeliveryChunks(msgs('a', 'b', 'c', 'd'), fmt, { minBatch: 2, maxChars: 8, sep: '|' });
+  assert.deepEqual(out.map((c) => c.hashes), [['a', 'b'], ['c', 'd']]);
+  assert.deepEqual(out.map((c) => c.text), ['本文a|本文b', '本文c|本文d']);
+});
+
+test('1件で maxChars を超えるメッセージは単独チャンク（4096字分割は送信側の責務）', () => {
+  const big = { text: 'x'.repeat(50), hash: 'big' };
+  const out = packDeliveryChunks([big, ...msgs('a')], (m) => m.text, { minBatch: 2, maxChars: 10, sep: '|' });
+  assert.deepEqual(out.map((c) => c.hashes), [['big'], ['a']]);
+});
+
+test('ラベル付け（format）はチャンク連結前に1件ずつ適用される', () => {
+  const items = [
+    { text: 'a', hash: 'a', self: false },
+    { text: 'b', hash: 'b', self: true },
+  ];
+  const out = packDeliveryChunks(items, (m) => (m.self ? '🔷 ' + m.text : m.text), { minBatch: 2, sep: '|' });
+  assert.deepEqual(out, [{ text: 'a|🔷 b', hashes: ['a', 'b'] }]);
+});
+
+test('空入力は空配列', () => {
+  assert.deepEqual(packDeliveryChunks([], fmt), []);
+});
+
+// --- toConvMessages（双方向フィンガープリント） ---
+
+const scan = (inbound: boolean, text: string, dt: string, hasImage = false): ScanMsg => ({ inbound, text, dt, hasImage });
+
+test('★顧客側(inbound)のハッシュ式は不変（既存台帳と一致・回帰防止）', () => {
+  // この値が変わると、アップグレード時に全顧客の窓内メッセージが一斉再配信される（誤配信）
+  const [m] = toConvMessages('chat', '123', [scan(true, 'こんにちは', '07/04 22:04')]);
+  assert.equal(m.hash, '0a5c4c157663f366985953c1debb7aaee4a726b3');
+  assert.equal(m.self, false);
+});
+
+test('自分側(self)は方向入りの別ハッシュ・self=true', () => {
+  const [m] = toConvMessages('chat', '123', [scan(false, 'こんにちは', '07/04 22:04')]);
+  assert.equal(m.hash, '40da39411a761ba52baedb3d3f9dd89df7d6e0f8');
+  assert.equal(m.self, true);
+});
+
+test('顧客と自分が同一日時・同一本文でも別メッセージ（方向で衝突しない）', () => {
+  // 実DOMは新→旧。時系列昇順に直り、両方が別ハッシュで残る
+  const out = toConvMessages('chat', '123', [scan(false, '了解です', '07/04 22:04'), scan(true, '了解です', '07/04 22:04')]);
+  assert.equal(out.length, 2);
+  assert.notEqual(out[0].hash, out[1].hash);
+  assert.deepEqual(out.map((m) => m.self), [false, true]); // 昇順: 顧客(先)→自分(後)
+});
+
+test('自分側の同文連投も :連番 で別メッセージ', () => {
+  const out = toConvMessages('chat', '123', [scan(false, 'はい', '07/04 22:04'), scan(false, 'はい', '07/04 22:04')]);
+  assert.equal(out.length, 2);
+  assert.notEqual(out[0].hash, out[1].hash);
+  assert.ok(out[1].hash.endsWith(':1'));
+});
+
+test('本文なし画像/スタンプは自分側でもプレースホルダで残る', () => {
+  const [m] = toConvMessages('chat', '123', [scan(false, '', '07/04 22:04', true)]);
+  assert.ok(m.text.includes('画像/スタンプ'));
+  assert.equal(m.self, true);
+});
+
+test('本文も画像も無い空吹き出しは捨てる', () => {
+  const out = toConvMessages('chat', '123', [scan(true, '', '07/04 22:04', false)]);
+  assert.deepEqual(out, []);
+});
+
+// --- 対応状況マーカーの遷移判定（L-Pro henshin → トピック名 🔴/✅）---
+
+import { decideMarkerTransitions } from '../src/logic.js';
+
+const cand = (key: string, marker: string | null) => ({ key, marker });
+const noTrunc = { truncated: false, max: 10 };
+const streak = () => new Map<string, number>();
+
+test('未返信一覧に居る顧客は pending(🔴) へ即遷移', () => {
+  const t = decideMarkerTransitions(
+    [cand('talk:1', 'done'), cand('talk:2', null)], new Set(['talk:1', 'talk:2']), noTrunc, streak());
+  assert.deepEqual(t, [
+    { key: 'talk:1', desired: 'pending' },
+    { key: 'talk:2', desired: 'pending' },
+  ]);
+});
+
+test('不在→done(✅) は doneAfterMisses サイクル連続不在で初めて遷移（1回目は保留）', () => {
+  const s = streak();
+  const c = [cand('talk:1', 'pending')];
+  assert.deepEqual(decideMarkerTransitions(c, new Set(), noTrunc, s), []); // 1回目: 保留
+  assert.deepEqual(decideMarkerTransitions(c, new Set(), noTrunc, s), [{ key: 'talk:1', desired: 'done' }]); // 2回目
+});
+
+test('不在ストリークは present で即リセット（一過性の一覧欠けで✅にしない）', () => {
+  const s = streak();
+  const c = [cand('talk:1', 'pending')];
+  decideMarkerTransitions(c, new Set(), noTrunc, s); // 不在1回
+  decideMarkerTransitions(c, new Set(['talk:1']), noTrunc, s); // 再出現 → リセット
+  assert.deepEqual(decideMarkerTransitions(c, new Set(), noTrunc, s), []); // 不在1回目からやり直し
+});
+
+test('doneAfterMisses=1 なら不在1回で✅', () => {
+  const t = decideMarkerTransitions(
+    [cand('talk:1', 'pending'), cand('talk:2', null)], new Set(),
+    { truncated: false, max: 10, doneAfterMisses: 1 }, streak());
+  assert.deepEqual(t, [
+    { key: 'talk:1', desired: 'done' },
+    { key: 'talk:2', desired: 'done' },
+  ]);
+});
+
+test('既に望む状態なら遷移なし（editForumTopic を呼ばせない）', () => {
+  const s = streak();
+  const c = [cand('talk:1', 'pending'), cand('talk:2', 'done')];
+  const t1 = decideMarkerTransitions(c, new Set(['talk:1']), { truncated: false, max: 10, doneAfterMisses: 1 }, s);
+  assert.deepEqual(t1, []);
+});
+
+test('表示上限打ち切り中は「不在=✅」を保留し、不在ストリークにも数えない', () => {
+  const s = streak();
+  const c = [cand('talk:1', 'pending'), cand('talk:2', 'done')];
+  const t1 = decideMarkerTransitions(c, new Set(['talk:2']), { truncated: true, max: 10, doneAfterMisses: 1 }, s);
+  assert.deepEqual(t1, [{ key: 'talk:2', desired: 'pending' }]); // 🔴側は即応
+  assert.equal(s.get('talk:1') ?? 0, 0); // 打ち切りサイクルは不在にカウントしない
+});
+
+test('max 件で打ち止め（残りは次サイクルへ持ち越し）だが、ストリーク更新は全候補分続く', () => {
+  const s = streak();
+  const c = [cand('talk:1', null), cand('talk:2', null), cand('talk:3', null)];
+  const t = decideMarkerTransitions(c, new Set(), { truncated: false, max: 2, doneAfterMisses: 1 }, s);
+  assert.deepEqual(t.map((x) => x.key), ['talk:1', 'talk:2']);
+  assert.equal(s.get('talk:3'), 1); // 持ち越し分も不在カウントは進んでいる
+});
+
+test('max は「実際の遷移数」で数える（無遷移の候補はカウントしない）', () => {
+  const t = decideMarkerTransitions(
+    [cand('talk:1', 'done'), cand('talk:2', 'done'), cand('talk:3', null)],
+    new Set(),
+    { truncated: false, max: 1, doneAfterMisses: 1 }, streak());
+  assert.deepEqual(t, [{ key: 'talk:3', desired: 'done' }]);
+});
+
+// --- 自分側発言の配信可否（MIRROR_SELF）---
+
+test('MIRROR_SELF=false: 顧客側だけ配信し、自分側は逆流控えを消費しつつ落とす', () => {
+  const msgs = [
+    { hash: 'a', self: false }, { hash: 'b', self: true }, { hash: 'c', self: false }, { hash: 'd', self: true },
+  ];
+  const seen: string[] = [];
+  const out = splitSelfDelivery(msgs, false, (m) => { seen.push(m.hash); return m.hash === 'd'; });
+  assert.deepEqual(out.map((m) => m.hash), ['a', 'c']);
+  assert.deepEqual(seen, ['b', 'd']); // 自分側ごとに1回ずつ呼ばれる（控えの残置防止）
+});
+
+test('MIRROR_SELF=true: 自分側も配信するが、Telegram発の逆流（echo）だけ落とす', () => {
+  const msgs = [{ hash: 'a', self: false }, { hash: 'b', self: true }, { hash: 'd', self: true }];
+  const out = splitSelfDelivery(msgs, true, (m) => m.hash === 'd');
+  assert.deepEqual(out.map((m) => m.hash), ['a', 'b']);
+});
+
+test('自分側しか無ければ MIRROR_SELF=false で配信ゼロ（トピックも作らせない）', () => {
+  const out = splitSelfDelivery([{ hash: 'b', self: true }], false, () => false);
+  assert.deepEqual(out, []);
+});
+
+// --- 追記ブロック（自分側発言を編集で載せて未読を増やさない）---
+
+test('splitRuns: 顧客側/自分側の連続で分け、順序を保つ', () => {
+  const runs = splitRuns([
+    { self: false, h: 1 }, { self: false, h: 2 }, { self: true, h: 3 }, { self: false, h: 4 }, { self: true, h: 5 }, { self: true, h: 6 },
+  ]);
+  assert.deepEqual(
+    runs.map((r) => [r.self, r.msgs.map((m) => m.h)]),
+    [[false, [1, 2]], [true, [3]], [false, [4]], [true, [5, 6]]]
+  );
+  assert.deepEqual(splitRuns([]), []);
+});
+
+test('buildSelfBlockText: 空/プレースホルダからは見出しで作り直し、既存本文には追記する', () => {
+  const t1 = buildSelfBlockText(null, [{ text: '配信A', dt: '09/12 09:00' }]);
+  assert.equal(t1, `${SELF_BLOCK_HEADER}\n──\n[09/12 09:00] 配信A`);
+  // 顧客抜粋付きのプレースホルダ → 見出し行は残し、プレースホルダ行だけ外して追記
+  const ph = selfBlockPlaceholder('先日の件、まだ迷っています。');
+  assert.ok(ph.endsWith(`\n${SELF_BLOCK_PLACEHOLDER_LINE}`));
+  const t2 = buildSelfBlockText(ph, [{ text: '配信A' }]);
+  assert.equal(t2, `${selfBlockHeader('先日の件、まだ迷っています。')}\n──\n配信A`);
+  assert.ok(!t2.includes(SELF_BLOCK_PLACEHOLDER_LINE));
+  const t3 = buildSelfBlockText(t2, [{ text: '返信B', dt: 'x' }, { text: '配信C' }]);
+  assert.equal(t3, `${t2}\n──\n[x] 返信B\n──\n配信C`);
+});
+
+test('selfBlockHeader: 顧客発言の抜粋を40字で切り、改行は潰す。空なら見出しのみ', () => {
+  assert.equal(selfBlockHeader(''), SELF_BLOCK_HEADER);
+  assert.equal(selfBlockHeader('  こんにちは\nよろしく '), `${SELF_BLOCK_HEADER} ← 「こんにちは よろしく」`);
+  const long = 'あ'.repeat(50);
+  assert.equal(selfBlockHeader(long), `${SELF_BLOCK_HEADER} ← 「${'あ'.repeat(40)}…」`);
+});
+
+test('safeSlice: サロゲートペア（絵文字）を境界で割らない', () => {
+  const s = 'a'.repeat(9) + '😀' + 'b';
+  assert.equal(safeSlice(s, 10), 'a'.repeat(9)); // 10文字目が絵文字の前半 → 1つ手前で切る
+  assert.equal(safeSlice(s, 11), 'a'.repeat(9) + '😀');
+  assert.equal(safeSlice('abc', 10), 'abc');
+});
+
+test('buildSelfBlockText: 1件が長すぎる場合は省略して上限に収める', () => {
+  const t = buildSelfBlockText(null, [{ text: 'あ'.repeat(5000) }]);
+  assert.ok(t.length < SELF_BLOCK_MAX);
+  assert.ok(t.includes('省略'));
+});
+
+test('packSelfBlocks: 収まるなら既存ブロックへの追記1件、超えたら次のブロックへ分割し全件が載る', () => {
+  const e = (n: number) => ({ text: 'x'.repeat(n) });
+  const one = packSelfBlocks(`${SELF_BLOCK_HEADER}\n──\n既存`, [e(10), e(20)]);
+  assert.equal(one.length, 1);
+  assert.equal(one[0].extendsExisting, true);
+  assert.deepEqual(one[0].entries, [0, 1]);
+  assert.ok(one[0].text.startsWith(`${SELF_BLOCK_HEADER}\n──\n既存`));
+  // 3000字×2 は 1ブロックに収まらない → 2ブロック（先頭は既存への追記、次は新規）
+  const two = packSelfBlocks(null, [e(3000), e(3000)]);
+  assert.equal(two.length, 2);
+  assert.deepEqual(two.map((p) => p.entries), [[0], [1]]);
+  assert.equal(two[0].extendsExisting, false);
+  assert.ok(two.every((p) => p.text.length <= SELF_BLOCK_MAX));
+  assert.ok(two[1].text.includes('x'.repeat(3000)));
+});
+
+test('packSelfBlocks: 既存ブロックに1件も入らなければ既存は触らず新ブロックから始める', () => {
+  const existing = `${SELF_BLOCK_HEADER}\n──\n${'y'.repeat(3700)}`;
+  const plans = packSelfBlocks(existing, [{ text: 'z'.repeat(500) }]);
+  assert.equal(plans.length, 1);
+  assert.equal(plans[0].extendsExisting, false);
+  assert.ok(!plans[0].text.includes('y'));
+  assert.deepEqual(plans[0].entries, [0]);
+});
+
+test('toConvMessages: dt を持ち回る（ハッシュ式は不変）', () => {
+  const msgs = toConvMessages('talk', '1', [{ inbound: false, text: '配信', dt: '09/12 09:00', hasImage: false }]);
+  assert.equal(msgs[0].dt, '09/12 09:00');
+  assert.equal(msgs[0].self, true);
+});

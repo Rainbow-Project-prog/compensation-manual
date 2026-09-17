@@ -1,0 +1,270 @@
+/**
+ * 新着配信の判定ロジック（Lpro/Telegram に依存しない純関数）。
+ *
+ * 2026-07-11 実機DOM確定に伴い、件数ベース（seen_count 比較）から
+ * ★フィンガープリント方式★（メッセージごとのハッシュ既知判定）へ移行した。
+ * - Lpro の会話履歴は行内に「直近数件」しか表示されない（窓）ため、件数比較は
+ *   「同数入れ替わり」で新着を取りこぼす原理的欠陥があった（事前レビュー [1][22]）。
+ * - ハッシュ（会員ID+日時+本文+同文連番。lpro-adapter が生成）の未知分だけを配信する
+ *   方式なら、窓がどれだけずれても「新着は必ず窓の末尾に現れる」性質だけで正しく動く。
+ *
+ * - bootstrapped=false（初遭遇）: 窓内の全メッセージを既知化する前提で、
+ *   末尾 bootstrapTail 件だけ配信対象にする（0なら配らない。起動時一括ブートストラップ用）。
+ * - bootstrapped=true: 未知ハッシュのメッセージだけを表示順のまま配信対象にする。
+ *
+ * 既知化（addSeen）のタイミングは呼び出し側（index.ts）の責務:
+ * 配信1件成功ごとに既知化することで、途中失敗しても再配信・取りこぼしが起きない。
+ */
+export type FpMsg = { text: string; hash: string };
+
+// 配信判定はハッシュだけで行うので、self ラベル等の追加フィールドを持つメッセージでも
+// そのまま（型を保ったまま）通せるようジェネリックにする。
+export function decideDeliveryBySeen<T extends { hash: string }>(
+  bootstrapped: boolean,
+  inbound: T[],
+  hasSeen: (hash: string) => boolean,
+  opts: { bootstrapTail?: number } = {}
+): { deliver: T[]; bootstrap: boolean } {
+  if (!bootstrapped) {
+    const tail = Math.max(0, Math.floor(opts.bootstrapTail ?? 0));
+    return { deliver: tail > 0 ? inbound.slice(-tail) : [], bootstrap: true };
+  }
+  return { deliver: inbound.filter((m) => !hasSeen(m.hash)), bootstrap: false };
+}
+
+/**
+ * 配信メッセージ列を「1通の Telegram メッセージに連結するチャンク」に詰める（429対策）。
+ * 新規顧客の履歴一括配信（実測中央値41通）を1件1通で送ると Telegram のレート制限(429)を
+ * 連発する（2026-07-26 解析: 429 の85%がこの経路）ため、minBatch 件以上まとまっている場合
+ * だけ連結して通数を減らす。通常の新着（数件）は従来どおり1件1通＝見た目を変えない。
+ *
+ * 各チャンクの text は format 済み本文を sep で連結したもの。hashes はそのチャンクに
+ * 入ったメッセージのハッシュ列で、チャンク送信成功ごとにまとめて既知化するのは
+ * 呼び出し側（index.ts）の責務（途中失敗しても送信済みチャンク分は再配信されない）。
+ * 1件で maxChars を超えるメッセージは単独チャンクにする（送信時の4096字分割は pushInbound が行う）。
+ */
+export function packDeliveryChunks<T extends { hash: string }>(
+  messages: T[],
+  format: (m: T) => string,
+  opts: { minBatch?: number; maxChars?: number; sep?: string } = {}
+): Array<{ text: string; hashes: string[] }> {
+  const minBatch = opts.minBatch ?? 6;
+  const maxChars = opts.maxChars ?? 3500;
+  const sep = opts.sep ?? '\n\n';
+  if (messages.length < minBatch) {
+    return messages.map((m) => ({ text: format(m), hashes: [m.hash] }));
+  }
+  const chunks: Array<{ text: string; hashes: string[] }> = [];
+  let curText = '';
+  let curHashes: string[] = [];
+  for (const m of messages) {
+    const t = format(m);
+    if (curHashes.length > 0 && curText.length + sep.length + t.length > maxChars) {
+      chunks.push({ text: curText, hashes: curHashes });
+      curText = '';
+      curHashes = [];
+    }
+    curText = curHashes.length === 0 ? t : curText + sep + t;
+    curHashes.push(m.hash);
+  }
+  if (curHashes.length > 0) chunks.push({ text: curText, hashes: curHashes });
+  return chunks;
+}
+
+// ── L-Pro対応状況 → Telegram トピック名マーカー（🔴未対応/✅対応済み）の遷移判定 ──
+// L-Pro の henshin（未返信/返信済み）が正。ブリッジの巡回は「未返信のみ」検索なので、
+//   一覧に居る  = 未返信  → 'pending'（🔴）
+//   一覧に不在  = 返信済み（または退会）→ 'done'（✅）
+// と推定できる。誤✅（対応済みに見えて実は未対応）が最悪方向の誤りなので、✅側は保守的に:
+//  - 一覧が表示上限で打ち切られている場合は保留（不在=「表示圏外の未返信」があり得る）。
+//    打ち切りサイクルは不在ストリークにも数えない。
+//  - 一過性の描画失敗・stale文書で一覧が欠けても1サイクルで✅にしない: doneAfterMisses
+//    サイクル連続で不在のときだけ✅へ遷移する（不在ストリークは呼び出し側が保持する absentStreak
+//    に記録。present で即リセット=🔴側は即応）。
+// 遷移（現在のマーカーと望ましい状態が異なる）だけを、編集APIを叩く上限 max 件まで返す。
+// max 到達後も候補全体のストリーク更新は続ける（持ち越したサイクルでも不在カウントを失わない）。
+export type MarkerState = 'pending' | 'done';
+export function decideMarkerTransitions(
+  candidates: Array<{ key: string; marker: string | null }>,
+  unreadKeys: ReadonlySet<string>,
+  opts: { truncated: boolean; max: number; doneAfterMisses?: number },
+  absentStreak: Map<string, number>
+): Array<{ key: string; desired: MarkerState }> {
+  const need = Math.max(1, opts.doneAfterMisses ?? 2);
+  const out: Array<{ key: string; desired: MarkerState }> = [];
+  for (const c of candidates) {
+    const present = unreadKeys.has(c.key);
+    let misses = 0;
+    if (present) {
+      absentStreak.delete(c.key);
+    } else if (!opts.truncated) {
+      misses = (absentStreak.get(c.key) ?? 0) + 1;
+      absentStreak.set(c.key, misses);
+    } else {
+      misses = absentStreak.get(c.key) ?? 0;
+    }
+    if (out.length >= opts.max) continue; // 上限到達後もストリーク更新だけは続ける
+    const desired: MarkerState = present ? 'pending' : 'done';
+    if (desired === 'done' && (opts.truncated || misses < need)) continue;
+    if (c.marker === desired) continue;
+    out.push({ key: c.key, desired });
+  }
+  return out;
+}
+
+// ── フィンガープリント生成（純関数。Lpro/Telegram 非依存なのでここで単体テストする）──
+import { createHash } from 'node:crypto';
+
+/**
+ * 配信候補のうち実際に Telegram へ流すものを選ぶ（純関数）。
+ *   - 顧客側（self=false）は常に配信
+ *   - 自分側（self=true）は mirrorSelf=true のときだけ配信し、その場合も Telegram 発の返信の逆流
+ *     （isEcho）は配信しない。mirrorSelf=false なら一切配信しない（顧客の発言だけを通知する運用）
+ * isEcho は副作用（控えの消費）を持つので、配信の有無に関わらず自分側発言ごとに必ず1回呼ぶ
+ * （控えを残置しない）。落とした分の既知化（addSeen）は呼び出し側の責務。
+ */
+export function splitSelfDelivery<T extends { self: boolean }>(
+  deliver: T[],
+  mirrorSelf: boolean,
+  isEcho: (m: T) => boolean
+): T[] {
+  return deliver.filter((m) => {
+    if (!m.self) return true;
+    const echo = isEcho(m);
+    return mirrorSelf && !echo;
+  });
+}
+
+/** 配信列を「顧客側の連続」「自分側の連続」の run に分ける（順序維持・純関数）。
+ * 顧客側は通常のメッセージとして送り、自分側は追記ブロックへ編集で載せる、の振り分け単位 */
+export function splitRuns<T extends { self: boolean }>(msgs: T[]): Array<{ self: boolean; msgs: T[] }> {
+  const runs: Array<{ self: boolean; msgs: T[] }> = [];
+  for (const m of msgs) {
+    const last = runs[runs.length - 1];
+    if (last && last.self === m.self) last.msgs.push(m);
+    else runs.push({ self: m.self, msgs: [m] });
+  }
+  return runs;
+}
+
+// ── 自分側（L-Pro 側）発言の「追記ブロック」──
+// Telegram は新しいメッセージを投稿すると必ず未読（バッジ）が増えるが、既存メッセージの編集は未読を増やさない。
+// そこで自分側の発言（一斉配信・自動応答・PC直返信）は新規投稿せず、トピック内の1つのメッセージ（追記ブロック）に
+// 編集で追記する。顧客の発言を届けた直後に空の追記ブロックを添えておけば（その時点でトピックは既に未読）、
+// 以後の配信は何回来ても未読を増やさず、トピックを開けば前後のやり取りが時系列で読める。
+export const SELF_BLOCK_HEADER = '🔷 L-Pro側（配信・返信）';
+/** 空ブロック（プレースホルダ）の2行目。追記時にはこの行を外して本文を積む */
+export const SELF_BLOCK_PLACEHOLDER_LINE = '（配信・返信はここに追記されます）';
+/** 追記ブロックの上限文字数（Telegram の 4096 に余裕を持たせる）。超えたら新しいブロックを作る */
+export const SELF_BLOCK_MAX = 3800;
+const SELF_ENTRY_MAX = 3000;
+const EXCERPT_MAX = 40;
+
+/** UTF-16 のサロゲートペア（絵文字等）を境界で割らない slice（割ると Telegram が 400 を返し得る） */
+export function safeSlice(text: string, n: number): string {
+  if (text.length <= n) return text;
+  let end = n;
+  const c = text.charCodeAt(end - 1);
+  if (c >= 0xd800 && c <= 0xdbff) end--;
+  return text.slice(0, end);
+}
+
+/** 追記ブロックの見出し。直前の顧客発言の抜粋を添える（トピック一覧のプレビューが常にこのブロックになるため、
+ * 一覧を眺めるだけで「誰が何と言った件か」が分かるように） */
+export function selfBlockHeader(customerExcerpt?: string): string {
+  const t = (customerExcerpt ?? '').replace(/\s+/g, ' ').trim();
+  if (!t) return SELF_BLOCK_HEADER;
+  const ex = safeSlice(t, EXCERPT_MAX);
+  return `${SELF_BLOCK_HEADER} ← 「${ex}${ex.length < t.length ? '…' : ''}」`;
+}
+
+/** 顧客の発言の直後に添える空ブロック本文 */
+export function selfBlockPlaceholder(customerExcerpt?: string): string {
+  return `${selfBlockHeader(customerExcerpt)}\n${SELF_BLOCK_PLACEHOLDER_LINE}`;
+}
+
+/** 既存ブロック本文を「追記の土台」に正規化する: null/空→見出しのみ、プレースホルダ→見出し行のみ、それ以外→そのまま */
+function selfBlockBase(existing: string | null): string {
+  const t = (existing ?? '').trim();
+  if (t === '') return SELF_BLOCK_HEADER;
+  const lines = t.split('\n');
+  if (lines.length === 2 && lines[1].trim() === SELF_BLOCK_PLACEHOLDER_LINE) return lines[0];
+  return t;
+}
+
+function selfEntryLine(e: { text: string; dt?: string }): string {
+  const body = e.text.length > SELF_ENTRY_MAX
+    ? `${safeSlice(e.text, SELF_ENTRY_MAX)}…（長文のため省略。Lproで確認してください）`
+    : e.text;
+  return `\n──\n${e.dt ? `[${e.dt}] ` : ''}${body}`;
+}
+
+/** 追記ブロックの本文を作る（純関数）。existing が null/空/プレースホルダなら見出しから作り直す */
+export function buildSelfBlockText(existing: string | null, entries: Array<{ text: string; dt?: string }>): string {
+  let text = selfBlockBase(existing);
+  for (const e of entries) text += selfEntryLine(e);
+  return text;
+}
+
+export type SelfBlockPlan = { text: string; entries: number[]; extendsExisting: boolean };
+
+/**
+ * 自分側発言の列を、上限（max）に収まるブロック単位に詰める（純関数。packDeliveryChunks と同じ発想）。
+ *   - 最初のブロックは既存ブロック（existing）への追記として組む（extendsExisting=true。編集で載せる）
+ *   - 収まらなくなったら次のブロック（見出しから・extendsExisting=false。サイレント新規送信）
+ *   - 1件がそれ自体で上限を超える場合は selfEntryLine で省略済みなので単独ブロックには必ず収まる
+ * entries[i] は元配列の添字。呼び出し側はブロック送信成功ごとにその添字分だけ既知化する
+ */
+export function packSelfBlocks(
+  existing: string | null,
+  entries: Array<{ text: string; dt?: string }>,
+  max: number = SELF_BLOCK_MAX
+): SelfBlockPlan[] {
+  const plans: SelfBlockPlan[] = [];
+  const hasExisting = (existing ?? '').trim() !== '';
+  let cur: SelfBlockPlan = { text: selfBlockBase(existing), entries: [], extendsExisting: hasExisting };
+  for (let i = 0; i < entries.length; i++) {
+    const line = selfEntryLine(entries[i]);
+    if (cur.text.length + line.length > max && cur.entries.length > 0) {
+      plans.push(cur);
+      cur = { text: SELF_BLOCK_HEADER, entries: [], extendsExisting: false };
+    } else if (cur.text.length + line.length > max && cur.extendsExisting) {
+      // 既存ブロックには1件も入らない → 既存はそのまま残し、新ブロックから始める
+      cur = { text: SELF_BLOCK_HEADER, entries: [], extendsExisting: false };
+    }
+    cur.text += line;
+    cur.entries.push(i);
+  }
+  if (cur.entries.length > 0) plans.push(cur);
+  return plans;
+}
+
+/** 生スキャン1件（lpro-adapter が行の DOM から抽出）。inbound=true は顧客側（.mb_M.left）。 */
+export type ScanMsg = { inbound: boolean; text: string; dt: string; hasImage: boolean };
+/** フィンガープリント付き会話メッセージ。self=true は自分側（オペレーター/自動応答）の発言。 */
+export type ConvMsg = { text: string; hash: string; self: boolean; dt?: string };
+
+/**
+ * 生スキャン（実DOMは新→旧順）→ フィンガープリント付き会話メッセージ（時系列昇順）。
+ * ★顧客側(inbound)のハッシュ式は従来と完全に同一に保つ：既存の seen 台帳と一致させ、
+ *   本機能アップグレードで顧客メッセージが一斉再配信されるのを防ぐため（誤配信/スパム防止の要）。
+ *   自分側(self)は "out" を挟んだ別式にし、顧客と同一日時・同一本文でも衝突させない。
+ * 同一式のメッセージが複数（同文連投）なら :連番 を付けて別メッセージ扱いにする。
+ */
+export function toConvMessages(inboxId: string, memberId: string, scans: ScanMsg[]): ConvMsg[] {
+  const res: ConvMsg[] = [];
+  const dup = new Map<string, number>();
+  for (const m of [...scans].reverse()) {
+    const self = !m.inbound;
+    const text = m.text || (m.hasImage ? '[画像/スタンプ]（本文なし。Lproで確認してください）' : '');
+    if (!text) continue;
+    const material = self
+      ? `${inboxId}|${memberId}|out|${m.dt}|${text}`
+      : `${inboxId}|${memberId}|${m.dt}|${text}`;
+    const base = createHash('sha1').update(material).digest('hex');
+    const n = dup.get(base) ?? 0;
+    dup.set(base, n + 1);
+    res.push({ text, hash: n === 0 ? base : `${base}:${n}`, self, dt: m.dt || undefined });
+  }
+  return res;
+}

@@ -1,0 +1,31 @@
+{
+  "name": "lpro-telegram-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20.6"
+  },
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "login": "tsx src/login.ts",
+    "chatid": "tsx src/chatid.ts",
+    "dump": "tsx src/dump.ts",
+    "doctor": "tsx src/doctor.ts",
+    "triage": "tsx src/triage.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/logic.test.ts test/instances.test.ts test/session.test.ts test/autologin.test.ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.4.1",
+    "dotenv": "^16.4.7",
+    "grammy": "^1.30.0",
+    "playwright": "^1.48.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

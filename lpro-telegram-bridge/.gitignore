@@ -1,0 +1,15 @@
+node_modules/
+.env
+.lpro-profile/
+bridge.db
+bridge.db-wal
+bridge.db-shm
+backups/
+bridge.lock
+# Lpro ログイン Cookie の退避（DPAPI 暗号化済みだが秘密情報）
+.lpro-session
+.lpro-session.*.tmp
+*.log
+dump/
+# 案件ごとのデータ（.env / プロファイル / DB / バックアップ / dump）。すべて秘密情報・顧客データ
+instances/

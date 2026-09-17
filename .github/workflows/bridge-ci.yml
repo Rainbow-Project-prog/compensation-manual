@@ -1,0 +1,42 @@
+name: bridge-ci
+
+on:
+  push:
+    paths:
+      - 'lpro-telegram-bridge/**'
+      - '.github/workflows/bridge-ci.yml'
+  pull_request:
+    paths:
+      - 'lpro-telegram-bridge/**'
+      - '.github/workflows/bridge-ci.yml'
+
+jobs:
+  check:
+    # windows + Node 24 は実運用機と同じ構成（better-sqlite3 のプリビルド有無・cmd.exe の
+    # スクリプト挙動など、ubuntu + Node 20 だけでは見えない破綻を検出する）
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            node: 20
+          - os: windows-latest
+            node: 24
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: lpro-telegram-bridge
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: lpro-telegram-bridge/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      # test/autologin.test.ts は模擬ログインページを Chromium で開いて検証する（ブラウザが無ければ skip される）
+      - run: npx playwright install --with-deps chromium
+        if: runner.os == 'Linux'
+      - run: npx playwright install chromium
+        if: runner.os == 'Windows'
+      - run: npm test
