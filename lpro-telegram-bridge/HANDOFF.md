@@ -90,11 +90,16 @@ lpro-telegram-bridge/
 │  ├─ doctor.ts          ← 起動前チェック CLI
 │  ├─ telegram.ts
 │  ├─ lpro-adapter.ts
+│  ├─ autologin.ts       ← セッション失効時の自動ログイン（RUNBOOK C）
+│  ├─ triage.ts          ← 止まったときの診断（RUNBOOK 0章）
 │  ├─ chatid.ts
 │  ├─ login.ts
 │  └─ index.ts
 └─ test/
-   └─ logic.test.ts
+   ├─ logic.test.ts
+   ├─ instances.test.ts
+   ├─ session.test.ts
+   └─ autologin.test.ts  ← 自動ログインのブラウザテスト（模擬ログインページ）
 ```
 
 ### 3.4 インストール
@@ -216,6 +221,8 @@ Lpro のトーク応対画面で F12 を開き、以下を右クリック → Co
   非テキストには「送信できない」旨を自動返信する。転送対応は将来拡張。
 - ~~セッション切れ時の自動再ログイン待ちを poll エラー時に挟むと安定する~~ → **実装済み**
   （poll エラー時の `ensureLoggedIn`、ブラウザクラッシュ時の自動再起動を含む）。
+  **2026-09-17〜 セッション失効時の自動ログイン**（`.env` の `LPRO_LOGIN_ID / LPRO_LOGIN_PASSKEY` で入力・送信。
+  失敗時はバックオフ、別アカウントなら自動停止。`src/autologin.ts` / RUNBOOK C）。
 - 初回メッセージの取りこぼし防止のため、起動時に全会話をブートストラップし、稼働中に初めて
   現れた会話は末尾 `BOOTSTRAP_TAIL` 件だけ配信する（「初回は一切配らない」から仕様変更。
   過去ログ全量スパムは引き続き防止される）。

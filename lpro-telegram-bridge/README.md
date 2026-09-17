@@ -28,10 +28,14 @@ lpro-telegram-bridge/
 │  ├─ doctor.ts          ← 起動前チェック CLI
 │  ├─ index.ts           ← 巡回ループ＋配線
 │  ├─ login.ts           ← 初回ログイン（headedブラウザ）
+│  ├─ autologin.ts       ← セッション失効時の自動ログイン（ログインフォームの入力・送信。RUNBOOK C）
+│  ├─ triage.ts          ← 止まったときの診断（RUNBOOK 0章）
 │  └─ chatid.ts          ← グループの chat_id 取得
 └─ test/
    ├─ logic.test.ts      ← 配信判定の単体テスト
-   └─ instances.test.ts  ← 案件間の競合ルール・データ配置規則の単体テスト
+   ├─ instances.test.ts  ← 案件間の競合ルール・データ配置規則の単体テスト
+   ├─ session.test.ts    ← ログインCookie退避の単体テスト
+   └─ autologin.test.ts  ← 自動ログインのブラウザテスト（模擬ログインページを Chromium で操作）
 ```
 
 ## セットアップ（家の常時起動PCで実行）
@@ -50,11 +54,13 @@ cp .env.example .env
 #    TELEGRAM_BOT_TOKEN / LPRO_LOGIN_URL / LPRO_BASIC_USER / LPRO_BASIC_PASS と、
 #    受信箱ごとの CHAT_TALK_URL・CHAT_GROUP_CHAT_ID（＋使うなら TALK_TALK_URL・TALK_GROUP_CHAT_ID）を記入
 #    （各受信箱は URL とグループID の両方が揃うと有効。少なくとも1つ必要）
+#    LPRO_LOGIN_ID / LPRO_LOGIN_PASSKEY（ログイン画面の ID とパスキー）を入れると、セッション失効時に
+#    自動でログインし直す（無人運用に推奨。RUNBOOK C）
 
 #    （完了済み）SELECTORS は 2026-07-11 の実機DOM（npm run dump）で確定済み。
 #    通常は編集不要（Lpro の UI 変更時のみ RUNBOOK A 参照）。
 
-# 3) Lpro 初回ログイン（ブラウザが開く。2FAも手動で通す）
+# 3) Lpro 初回ログイン（ブラウザが開く。2FAも手動で通す。以降のセッション失効は自動ログインで復旧）
 npm run login
 
 # 4) Telegram グループの chat_id を取得（※ブリッジ本体と同時実行しない）
@@ -88,10 +94,10 @@ pm2 save
 | `npm run doctor` | 起動前チェック。`.env` の必須項目・SELECTORS の `'TODO'` 残り・Node バージョン・他案件との設定競合を検出（index.ts 起動時にも同じチェックが走る） |
 | `npm run triage` | **止まったときの診断**（読み取り専用・稼働中も安全）。プロセスの生存・Lpro ログイン・Telegram の疎通と権限・台帳の最終記録時刻・PM2 ログの異常を1コマンドで点検し、次にやることを出す（RUNBOOK 0章） |
 | `npm start` | 本起動（巡回ループ）。ブラウザクラッシュ時は自動再起動、セッション切れ疑い時は再ログイン待ち |
-| `npm run login` | Lpro 初回ログイン（headedブラウザ） |
+| `npm run login` | Lpro 初回ログイン（headedブラウザ）。稼働中のセッション失効は `LPRO_LOGIN_ID / LPRO_LOGIN_PASSKEY` があれば自動ログインで復旧する（RUNBOOK C） |
 | `npm run chatid` | Telegram グループの chat_id 取得（本体停止中に実行） |
 | `npm run dump` | トーク画面の実DOMを `dump/` に保存する診断ツール（UI変更時のセレクタ復旧用） |
-| `npm test` | 配信判定ロジック（`src/logic.ts`）と案件間の競合ルール（`src/instances.ts`）の単体テスト |
+| `npm test` | 配信判定ロジック（`src/logic.ts`）・案件間の競合ルール（`src/instances.ts`）・Cookie 退避（`src/session.ts`）の単体テストと、自動ログイン（`src/autologin.ts`）のブラウザテスト（Chromium が無い環境では skip） |
 | `npm run typecheck` | `tsc --noEmit` で型チェック（src + test） |
 
 ## 複数案件の運用（2026-09-07〜）

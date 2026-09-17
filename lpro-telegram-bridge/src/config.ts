@@ -34,6 +34,14 @@ export const cfg = {
   // 設定すると、別のアカウントでログインされた場合に自動ログアウトして正しいログインを待つ
   // （同じ Lpro サーバーに複数案件がある場合の、別案件の顧客への誤送信防止）。空なら照合しない
   lproSiteId: (process.env.LPRO_SITE_ID ?? '').trim(),
+  // 自動ログイン（src/autologin.ts）。Lpro のセッションが失効してログイン画面になったとき、人を待たずに入り直す。
+  //   auto（既定）= LPRO_LOGIN_ID / LPRO_LOGIN_PASSKEY があれば入力して送信する。無ければ、ブラウザの自動入力で
+  //                 フォームが埋まっているときだけ送信ボタンを押す（何も埋まっていなければ従来どおり手動ログイン待ち）
+  //   off         = ログイン画面には一切触らない（2026-09-17 以前の挙動）
+  // 失敗時は間隔を延ばして再試行し（アカウントロック防止）、別アカウントだった場合は自動停止する（lpro-adapter）
+  autoLogin: autoLoginModeOf(process.env.AUTO_LOGIN),
+  loginId: (process.env.LPRO_LOGIN_ID ?? '').trim(),
+  loginPasskey: process.env.LPRO_LOGIN_PASSKEY ?? '',
   // 停止中・稼働中に初めて現れた顧客（=いま送ってきた新規顧客）の初回配信件数。
   // 0にすると初回は何も配らない＝初回メッセージを取りこぼすので注意。
   bootstrapTail: num('BOOTSTRAP_TAIL', 5),
@@ -137,6 +145,17 @@ function required(k: string): string {
   return v;
 }
 
+export type AutoLoginMode = 'auto' | 'off';
+/** AUTO_LOGIN の解釈。未設定・不明な値は auto（資格情報が無ければ自動入力済みフォームの送信だけ＝実害なし） */
+function autoLoginModeOf(raw: string | undefined): AutoLoginMode {
+  const v = (raw ?? '').trim().toLowerCase();
+  if (['off', 'false', '0', 'no'].includes(v)) return 'off';
+  if (v !== '' && !['auto', 'on', 'true', '1', 'yes'].includes(v)) {
+    console.warn(`環境変数 AUTO_LOGIN が不明な値です: "${raw}" → auto を使用します（auto / off）`);
+  }
+  return 'auto';
+}
+
 export type SelfMode = 'silent' | 'notify' | 'off';
 /** MIRROR_SELF の解釈。未設定・不明な値は silent（安全側＝流すが鳴らさない） */
 function selfModeOf(raw: string | undefined): SelfMode {
@@ -187,6 +206,15 @@ export const SELECTORS = {
   chatFrame: 'iframe[name="chatframe"]',
   // /manage/ シェルでのログイン済み判定（ログアウトメニューはログイン後にだけ出る）
   loggedInMarker: 'nav.opemenu a[href="logout"]',
+
+  // ── ログインフォーム（自動ログイン用。src/autologin.ts）──
+  // 2026-09-17 時点でログイン画面の実DOMは未収集。パスキー欄だけ一般的なセレクタで指定し、ID 欄・送信ボタンは
+  // '' = 自動判定（パスキー欄と同じ form 内でその直前のテキスト入力 / 同じ form の submit ボタン）に任せる。
+  // 自動ログインが「送信しました」の後に失敗し続けるときは `npm run dump -- <LPRO_LOGIN_URL> login`（ログアウト状態で）
+  // でログイン画面の DOM を取り、ここを確定する（RUNBOOK C）
+  loginPassInput: 'input[type="password"]',
+  loginIdInput: '',
+  loginSubmit: '',
 
   // ── 顧客行（chatframe 内）──
   // 顧客1件分の行。一括返信行（data-rowid="0"）も同じ class を持つため、

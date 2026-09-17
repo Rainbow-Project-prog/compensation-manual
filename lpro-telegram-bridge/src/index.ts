@@ -699,11 +699,24 @@ async function main(): Promise<void> {
   // 会話本文・顧客名は載せない（notifyOps の規約どおり）。
   setLoginNotifier((e, detail) => {
     if (e === 'waiting') {
-      void notifyOps('⚠️ Lpro に未ログインです。ブリッジは受信・返信を止めて手動ログイン待機中です。表示中のブラウザ（赤いバナー付き）でログイン（2FA含む）してください。');
+      void notifyOps(
+        '⚠️ Lpro に未ログインです。ブリッジは受信・返信を止めてログイン待機中です。表示中のブラウザ（赤いバナー付き）で手動ログイン（2FA含む）してください。' +
+        (detail ? `（${detail}）` : '')
+      );
     } else if (e === 'wrong-site') {
       void notifyOps(`🚫 Lpro に別のアカウントでログインされていたためログアウトしました（${detail ?? ''}）。この案件のアカウントで、表示中のブラウザからログインし直してください。受信・返信は止めています。`);
+    } else if (e === 'auto-login') {
+      // 未ログインを通知する前に自動で復旧できたとき（⚠️ は出ていない）。セッション失効があった事実だけ残す
+      void notifyOps(`🔑 Lpro のセッションが切れていたため自動ログインしました（${detail ?? ''}）。監視を続けています。`);
+    } else if (e === 'auto-login-failed') {
+      void notifyOps(`⚠️ Lpro の自動ログイン: ${detail ?? '失敗しました'}。表示中のブラウザ（赤いバナー付き）で手動ログインもできます。`);
+    } else if (e === 'auto-login-blocked') {
+      void notifyOps(
+        `🚫 自動ログインを停止しました: ${detail ?? ''}。.env の LPRO_LOGIN_ID / LPRO_LOGIN_PASSKEY / LPRO_SITE_ID を確認し、` +
+        '修正後にブリッジを再起動してください。それまでは手動ログインだけ受け付けます。'
+      );
     } else {
-      void notifyOps('✅ Lpro へのログインを確認しました。監視を再開します。');
+      void notifyOps(`✅ Lpro へのログインを確認しました${detail ? `（${detail}）` : ''}。監視を再開します。`);
     }
   });
 

@@ -65,6 +65,7 @@ function sectionConfig(): void {
   info(`データ: ${dataDir}`);
   info(`受信箱: ${inboxes.length ? inboxes.map((i) => `${i.name}→${i.groupChatId}`).join(' / ') : '（有効な受信箱がありません）'}`);
   info(`MIRROR_SELF=${cfg.selfMode} / ONLY_UNREAD=${cfg.onlyUnread} / HEADLESS=${cfg.headless} / 巡回間隔=${cfg.pollIntervalMs}ms`);
+  info(`自動ログイン: ${cfg.autoLogin === 'off' ? '無効（AUTO_LOGIN=off）' : cfg.loginPasskey ? '有効（.env の ID/パスキー）' : '資格情報なし（自動入力済みフォームの送信のみ。無人復旧には LPRO_LOGIN_ID/PASSKEY を設定）'}`);
 
   const d = runDoctor();
   for (const p of d.problems) bad(`設定: ${p}`, '`.env` を修正して `npm run doctor` が通る状態にする');
@@ -124,8 +125,8 @@ function sectionLpro(live: boolean): void {
       ok(`ログインCookieの退避: ${stamp(m)}`);
     }
   }
-  info('※ ログイン切れは「プロセスは生きたまま巡回だけ止まる」状態です。復旧は画面のブラウザで人が');
-  info('   ログインし直すしかありません（pm2 restart では直りません。RUNBOOK C章）。');
+  info('※ ログイン切れは「プロセスは生きたまま巡回だけ止まる」状態です。自動ログイン（LPRO_LOGIN_ID/PASSKEY）が');
+  info('   無効・失敗なら、画面のブラウザで人がログインし直します（pm2 restart では直りません。RUNBOOK C章）。');
 }
 
 // ───────────────────────────────────────────────────────── 4. Telegram 疎通

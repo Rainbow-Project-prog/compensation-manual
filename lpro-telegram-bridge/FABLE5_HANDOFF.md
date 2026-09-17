@@ -138,6 +138,8 @@ src/paths.ts         ← 案件のデータ配置規則（純関数）
 src/instances.ts     ← 複数案件の列挙と案件間の設定競合検出（doctor / 起動ガードが使う）
 src/config.ts        ← ★Lpro依存の集約点。SELECTORS 14項目（実機DOMで全確定済み）★
 src/lpro-adapter.ts  ← ★Playwright 操作。壊れたらここと config.ts だけ直す設計★
+src/autologin.ts     ← セッション失効時の自動ログイン（ログインフォームの入力・1回送信。再試行制御は lpro-adapter）
+src/triage.ts        ← 止まったときの診断 CLI（読み取り専用。RUNBOOK 0章）
 src/logic.ts         ← 配信判定の純関数（test/logic.test.ts で12ケース検証済み）
 src/index.ts         ← 起動時ブートストラップ → 巡回ループ。エラー分類・復旧・終了処理
 src/telegram.ts      ← grammY。リトライ・分割送信・トピック復旧・フィードバック

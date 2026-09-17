@@ -34,4 +34,9 @@ jobs:
           cache-dependency-path: lpro-telegram-bridge/package-lock.json
       - run: npm ci
       - run: npm run typecheck
+      # test/autologin.test.ts は模擬ログインページを Chromium で開いて検証する（ブラウザが無ければ skip される）
+      - run: npx playwright install --with-deps chromium
+        if: runner.os == 'Linux'
+      - run: npx playwright install chromium
+        if: runner.os == 'Windows'
       - run: npm test

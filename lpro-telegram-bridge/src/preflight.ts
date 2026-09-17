@@ -124,6 +124,27 @@ export function runDoctor(): PreflightResult {
     if (lu && !/\/manage\/?$/.test(lu)) warnings.push(`LPRO_LOGIN_URL は通常 https://<ホスト>/manage/ です（現在: ${lu}）。別アカウント検出時のログアウト URL はこの値から作られます`);
   }
 
+  // 自動ログイン（AUTO_LOGIN / LPRO_LOGIN_ID / LPRO_LOGIN_PASSKEY）。片方だけ・プレースホルダのままを検出
+  {
+    const mode = (process.env.AUTO_LOGIN ?? '').trim().toLowerCase();
+    const off = ['off', 'false', '0', 'no'].includes(mode);
+    if (mode !== '' && !off && !['auto', 'on', 'true', '1', 'yes'].includes(mode)) {
+      warnings.push(`環境変数 AUTO_LOGIN が不明な値です: "${mode}"（auto / off）→ auto として扱います`);
+    }
+    const id = (process.env.LPRO_LOGIN_ID ?? '').trim();
+    const pk = process.env.LPRO_LOGIN_PASSKEY ?? '';
+    if (id.includes('（') || pk.includes('（')) {
+      problems.push('LPRO_LOGIN_ID / LPRO_LOGIN_PASSKEY がプレースホルダのままです（使わないなら両方空にする）');
+    } else if (id && !pk) {
+      warnings.push('LPRO_LOGIN_ID だけ設定されています（LPRO_LOGIN_PASSKEY が無いと自動ログインはフォームに入力しません）');
+    } else if (!id && pk) {
+      warnings.push('LPRO_LOGIN_PASSKEY だけ設定されています（ID 欄が空のログイン画面では自動ログインできません。LPRO_LOGIN_ID も設定してください）');
+    }
+    if (off) notes.push('自動ログイン: 無効（AUTO_LOGIN=off。セッション失効時は手動ログイン待ち）');
+    else if (pk) notes.push('自動ログイン: 有効（.env の ID/パスキーで入力・送信）');
+    else notes.push('自動ログイン: 資格情報なし（ブラウザが自動入力済みのフォームを送信するだけ。無人復旧には LPRO_LOGIN_ID / LPRO_LOGIN_PASSKEY を設定）');
+  }
+
   // 数値系はタイプミス（NaN）が「初回メッセージの無音喪失」「ウェイトなし巡回」に直結するため事前に弾く
   for (const k of ['POLL_INTERVAL_MS', 'BOOTSTRAP_TAIL'] as const) {
     const raw = process.env[k];
