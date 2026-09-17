@@ -133,13 +133,28 @@ export function runDoctor(): PreflightResult {
     }
     const id = (process.env.LPRO_LOGIN_ID ?? '').trim();
     const pk = process.env.LPRO_LOGIN_PASSKEY ?? '';
-    if (id.includes('（') || pk.includes('（')) {
+    if (/^（/.test(id) || /^（/.test(pk)) {
       problems.push('LPRO_LOGIN_ID / LPRO_LOGIN_PASSKEY がプレースホルダのままです（使わないなら両方空にする）');
+    } else if (pk && !off && !(process.env.LPRO_SITE_ID ?? '').trim()) {
+      // 自動ログインは無人で資格情報を送る。別案件のアカウントに入ってしまう事故を止める唯一の照合が LPRO_SITE_ID
+      problems.push(
+        'LPRO_LOGIN_PASSKEY を設定するときは LPRO_SITE_ID も必須です（自動ログインが別案件のアカウントに入ったときに止める照合。' +
+        '値は初回ログイン後のログ「Lpro サイト確認: site_id=NN」の NN）'
+      );
     } else if (id && !pk) {
       warnings.push('LPRO_LOGIN_ID だけ設定されています（LPRO_LOGIN_PASSKEY が無いと自動ログインはフォームに入力しません）');
     } else if (!id && pk) {
       warnings.push('LPRO_LOGIN_PASSKEY だけ設定されています（ID 欄が空のログイン画面では自動ログインできません。LPRO_LOGIN_ID も設定してください）');
     }
+    // dotenv は引用符なしの値の '#' 以降をコメントとして捨てる。パスキーに '#' があると黙って短くなり、ロック寸前まで誤送信する
+    try {
+      const raw = readFileSync(envPath, 'utf8');
+      const m = /^\s*LPRO_LOGIN_PASSKEY\s*=\s*(.*)$/m.exec(raw);
+      const rawVal = (m?.[1] ?? '').trim();
+      if (rawVal && !/^["'`]/.test(rawVal) && rawVal.includes('#')) {
+        warnings.push('LPRO_LOGIN_PASSKEY に引用符なしの # が含まれています（# 以降は無視されます）。値全体を "…" で囲んでください');
+      }
+    } catch { /* .env が無い場合は上で検出済み */ }
     if (off) notes.push('自動ログイン: 無効（AUTO_LOGIN=off。セッション失効時は手動ログイン待ち）');
     else if (pk) notes.push('自動ログイン: 有効（.env の ID/パスキーで入力・送信）');
     else notes.push('自動ログイン: 資格情報なし（ブラウザが自動入力済みのフォームを送信するだけ。無人復旧には LPRO_LOGIN_ID / LPRO_LOGIN_PASSKEY を設定）');

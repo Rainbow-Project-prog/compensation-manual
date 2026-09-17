@@ -712,8 +712,9 @@ async function main(): Promise<void> {
       void notifyOps(`⚠️ Lpro の自動ログイン: ${detail ?? '失敗しました'}。表示中のブラウザ（赤いバナー付き）で手動ログインもできます。`);
     } else if (e === 'auto-login-blocked') {
       void notifyOps(
-        `🚫 自動ログインを停止しました: ${detail ?? ''}。.env の LPRO_LOGIN_ID / LPRO_LOGIN_PASSKEY / LPRO_SITE_ID を確認し、` +
-        '修正後にブリッジを再起動してください。それまでは手動ログインだけ受け付けます。'
+        `🚫 自動ログインを停止しました: ${detail ?? ''}。.env の資格情報（LPRO_LOGIN_ID / LPRO_LOGIN_PASSKEY）または` +
+        'ブラウザに保存されたパスワードと、LPRO_SITE_ID を確認してください。.env を直したらブリッジを再起動、' +
+        'ブラウザの自動入力が原因なら正しいアカウントで手動ログインすれば解除されます。それまでは手動ログインだけ受け付けます。'
       );
     } else {
       void notifyOps(`✅ Lpro へのログインを確認しました${detail ? `（${detail}）` : ''}。監視を再開します。`);

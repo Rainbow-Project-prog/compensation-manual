@@ -96,7 +96,7 @@ pm2 save
 | `npm start` | 本起動（巡回ループ）。ブラウザクラッシュ時は自動再起動、セッション切れ疑い時は再ログイン待ち |
 | `npm run login` | Lpro 初回ログイン（headedブラウザ）。稼働中のセッション失効は `LPRO_LOGIN_ID / LPRO_LOGIN_PASSKEY` があれば自動ログインで復旧する（RUNBOOK C） |
 | `npm run chatid` | Telegram グループの chat_id 取得（本体停止中に実行） |
-| `npm run dump` | トーク画面の実DOMを `dump/` に保存する診断ツール（UI変更時のセレクタ復旧用） |
+| `npm run dump` | トーク画面の実DOMを `dump/` に保存する診断ツール（UI変更時のセレクタ復旧用）。`npm run dump -- <URL> <サブフォルダ>` でログイン画面など任意の画面も取れる（本体停止中に実行。RUNBOOK C） |
 | `npm test` | 配信判定ロジック（`src/logic.ts`）・案件間の競合ルール（`src/instances.ts`）・Cookie 退避（`src/session.ts`）の単体テストと、自動ログイン（`src/autologin.ts`）のブラウザテスト（Chromium が無い環境では skip） |
 | `npm run typecheck` | `tsc --noEmit` で型チェック（src + test） |
 

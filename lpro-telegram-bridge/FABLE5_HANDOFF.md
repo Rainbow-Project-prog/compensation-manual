@@ -126,7 +126,8 @@ Ultracode で実施し、結果を私に報告してから §5 の実装フェ�
 - [6] Windows の PM2 停止はシグナルが届かないため `shutdown_with_message` で対応済みだが、
   強制kill 経路は残る（RUNBOOK E）。
 - [21] 旧 `inboundBubbleMarker` は廃止。現行は `messageGroup` + `inboundGroupClass`（`.mb_M.left`）で方向判定（解決済み）。
-- [24] `HEADLESS=true` では手動ログイン不可（明確なエラーを出すのみ。原理的制約）。
+- [24] `HEADLESS=true` では手動ログイン不可（明確なエラーを出すのみ。原理的制約）。2026-09-17〜 `.env` に
+  `LPRO_LOGIN_ID / LPRO_LOGIN_PASSKEY` があれば headless でも自動ログインで待機・復旧する（無ければ従来どおりエラー）。
 
 ---
 
@@ -136,7 +137,7 @@ Ultracode で実施し、結果を私に報告してから §5 の実装フェ�
 src/env.ts           ← 案件（インスタンス）の解決と .env 読み込み（★最初に import される★）
 src/paths.ts         ← 案件のデータ配置規則（純関数）
 src/instances.ts     ← 複数案件の列挙と案件間の設定競合検出（doctor / 起動ガードが使う）
-src/config.ts        ← ★Lpro依存の集約点。SELECTORS 14項目（実機DOMで全確定済み）★
+src/config.ts        ← ★Lpro依存の集約点。SELECTORS 14項目（実機DOMで全確定済み）＋ログインフォーム3項目（2026-09-17 追加。実DOM未収集＝自動判定。RUNBOOK C）★
 src/lpro-adapter.ts  ← ★Playwright 操作。壊れたらここと config.ts だけ直す設計★
 src/autologin.ts     ← セッション失効時の自動ログイン（ログインフォームの入力・1回送信。再試行制御は lpro-adapter）
 src/triage.ts        ← 止まったときの診断 CLI（読み取り専用。RUNBOOK 0章）
