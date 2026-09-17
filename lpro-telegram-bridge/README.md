@@ -86,6 +86,7 @@ pm2 save
 | コマンド | 説明 |
 |---------|------|
 | `npm run doctor` | 起動前チェック。`.env` の必須項目・SELECTORS の `'TODO'` 残り・Node バージョン・他案件との設定競合を検出（index.ts 起動時にも同じチェックが走る） |
+| `npm run triage` | **止まったときの診断**（読み取り専用・稼働中も安全）。プロセスの生存・Lpro ログイン・Telegram の疎通と権限・台帳の最終記録時刻・PM2 ログの異常を1コマンドで点検し、次にやることを出す（RUNBOOK 0章） |
 | `npm start` | 本起動（巡回ループ）。ブラウザクラッシュ時は自動再起動、セッション切れ疑い時は再ログイン待ち |
 | `npm run login` | Lpro 初回ログイン（headedブラウザ） |
 | `npm run chatid` | Telegram グループの chat_id 取得（本体停止中に実行） |
